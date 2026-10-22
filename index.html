@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Parkeren Jutfasehof</title>
+<meta name="description" content="Deel je parkeerplek met de buren als je weg bent.">
+<meta name="theme-color" content="#1d4f9e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Parkeren">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&family=Overpass+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+/* Layout: telefoon eerst. Compacte kop, navigatie onderin binnen duimbereik, acties in een uitschuifpaneel van onderen. Vanaf 900px plattegrond en lijst naast elkaar. */
+:root {
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-2: #f5f7fa;
+  --ink: #16202e;
+  --muted: #5b6778;
+  --line: #d6dce5;
+  --sign: #1d4f9e;
+  --sign-ink: #ffffff;
+  --free: #23804c;
+  --free-soft: #dcf0e3;
+  --claimed: #a8650a;
+  --claimed-soft: #fbecd2;
+  --own: #cdd3dc;
+  --paving: #e6ded3;
+  --verge: #d7e6d9;
+  --warn: #b3261e;
+  --warn-soft: #fbe3e1;
+  --wa: #128c4a;
+  --scrim: rgba(12, 18, 28, .45);
+  --display: "Overpass", "Arial Narrow", Arial, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "Overpass Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --nav-h: 62px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b; --surface: #18202b; --surface-2: #1e2734; --ink: #e7ecf3; --muted: #9ba7b7; --line: #2c3646;
+    --sign: #4f86d8; --sign-ink: #0b1220; --free: #52c487; --free-soft: #173426; --claimed: #e8a646; --claimed-soft: #3a2b12;
+    --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --scrim: rgba(0,0,0,.6); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b; --surface: #18202b; --surface-2: #1e2734; --ink: #e7ecf3; --muted: #9ba7b7; --line: #2c3646;
+  --sign: #4f86d8; --sign-ink: #0b1220; --free: #52c487; --free-soft: #173426; --claimed: #e8a646; --claimed-soft: #3a2b12;
+  --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --scrim: rgba(0,0,0,.6); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.45; -webkit-tap-highlight-color: transparent; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--sign); }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--sign); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+/* kop */
+header.top { background: var(--sign); color: var(--sign-ink); position: sticky; top: env(safe-area-inset-top, 0px); z-index: 6; }
+.top .wrap { display: flex; align-items: center; gap: 10px; padding-block: 8px; }
+.psign { width: 34px; height: 34px; border: 2.5px solid currentColor; border-radius: 6px; display: grid; place-items: center; font-family: var(--display); font-weight: 800; font-size: 22px; line-height: 1; padding-top: 3px; flex: none; }
+.brand { min-width: 0; flex: 1; }
+.brand h1 { font-family: var(--display); font-weight: 800; font-size: 18px; margin: 0; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand .sub { font-size: 12.5px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.whoami { flex: none; font-family: var(--display); font-weight: 600; font-size: 14px; background: color-mix(in srgb, var(--sign-ink) 16%, transparent); border: 0; color: inherit; border-radius: 999px; padding: 8px 12px; cursor: pointer; min-height: 36px; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--sign) 60%, transparent); outline-offset: 2px; }
+
+/* navigatie onderin */
+nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: repeat(5, 1fr); padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+nav.tabs button { background: none; border: 0; height: var(--nav-h); display: grid; place-items: center; align-content: center; gap: 2px; color: var(--muted); font-family: var(--display); font-size: 12px; font-weight: 600; cursor: pointer; position: relative; }
+nav.tabs button svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+nav.tabs button[aria-selected="true"] { color: var(--sign); }
+nav.tabs button[aria-selected="true"]::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 3px; border-radius: 0 0 3px 3px; background: var(--sign); }
+nav.tabs .badge { position: absolute; top: 7px; left: calc(50% + 8px); background: var(--warn); color: var(--surface); font-family: var(--mono); font-size: 11px; border-radius: 999px; padding: 0 5px; line-height: 16px; min-width: 16px; text-align: center; }
+@media (min-width: 900px) {
+  nav.tabs { left: 50%; right: auto; transform: translateX(-50%); width: 560px; bottom: 16px; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.12); padding-bottom: 0; }
+}
+
+main { padding-block: 14px calc(var(--nav-h) + 32px + env(safe-area-inset-bottom, 0px)); }
+section[data-tab] { display: grid; gap: 14px; }
+h2 { font-family: var(--display); font-weight: 800; font-size: 20px; margin: 0; text-wrap: balance; line-height: 1.2; }
+h3 { font-family: var(--display); font-weight: 600; font-size: 17px; margin: 0; }
+.eyebrow { font-family: var(--display); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.flat { display: grid; gap: 12px; min-width: 0; }
+.grid2 { display: grid; gap: 14px; }
+@media (min-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+
+.notice { display: grid; gap: 2px; padding: 10px 12px; border-radius: 10px; border-left: 4px solid var(--sign); background: var(--surface); }
+.notice.warn { border-color: var(--warn); background: var(--warn-soft); }
+.notice.amber { border-color: var(--claimed); background: var(--claimed-soft); }
+.notice.green { border-color: var(--free); background: var(--free-soft); }
+.notices { display: grid; gap: 8px; }
+.notices:empty { display: none; }
+
+/* momentkiezer */
+.momentbar { display: grid; gap: 8px; }
+.scroller { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; padding-block: 2px; }
+.scroller::-webkit-scrollbar { display: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 0 14px; min-height: 38px; cursor: pointer; font-size: 15px; white-space: nowrap; }
+.chip[aria-pressed="true"] { background: var(--sign); color: var(--sign-ink); border-color: var(--sign); }
+.chip:disabled { opacity: .45; cursor: not-allowed; }
+.chip .tag { font-size: 12px; opacity: .8; margin-left: 4px; }
+.customMoment { display: flex; gap: 8px; align-items: center; }
+.customMoment label { font-size: 14px; color: var(--muted); flex: none; }
+
+.stats { display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; }
+.stat { display: flex; gap: 6px; align-items: baseline; }
+.stat b { font-family: var(--display); font-weight: 800; font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; }
+.stat.free b { color: var(--free); }
+.stat.charge b { color: var(--sign); }
+
+.btn { border: 0; border-radius: 10px; padding: 0 16px; min-height: 44px; font-family: var(--display); font-weight: 600; font-size: 16px; cursor: pointer; background: var(--sign); color: var(--sign-ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; }
+.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.btn.green { background: var(--free); color: var(--surface); }
+.btn.wa { background: var(--wa); color: var(--surface); }
+.btn.danger { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
+.btn.sm { min-height: 38px; font-size: 15px; padding: 0 12px; }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label, .lbl { font-size: 14px; color: var(--muted); font-weight: 600; }
+input[type="datetime-local"], input[type="time"], input[type="text"], input[type="tel"], input[type="number"] {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; min-height: 46px; width: 100%; min-width: 0; font-size: 16px;
+}
+.two { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.err { color: var(--warn); font-size: 15px; }
+
+/* plattegrond */
+.mapbox svg { width: 100%; height: auto; display: block; max-height: 62vh; }
+.spot { cursor: pointer; outline: none; }
+.spot rect { stroke: var(--ink); stroke-opacity: .25; stroke-width: 1.5; }
+.spot.free rect { fill: var(--free-soft); stroke: var(--free); stroke-opacity: 1; stroke-width: 3; }
+.spot.claimed rect { fill: var(--claimed-soft); stroke: var(--claimed); stroke-opacity: 1; stroke-width: 3; }
+.spot.own rect { fill: var(--own); }
+.spot.unknown rect { fill: var(--surface); stroke-dasharray: 6 5; }
+.spot:focus-visible rect { stroke: var(--sign); stroke-opacity: 1; stroke-width: 5; }
+.spot text { fill: var(--ink); font-family: var(--display); pointer-events: none; }
+.spot .pnum { font-weight: 800; font-size: 25px; }
+.spot .pstate { font-size: 16px; fill: var(--muted); }
+.spot.free .pstate { fill: var(--free); font-weight: 600; }
+.spot.claimed .pstate { fill: var(--claimed); font-weight: 600; }
+.spot.mine .pnum { text-decoration: underline; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.legend i { display: inline-block; width: 13px; height: 13px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; border: 2px solid; }
+.lg-free { background: var(--free-soft); border-color: var(--free) !important; }
+.lg-claimed { background: var(--claimed-soft); border-color: var(--claimed) !important; }
+.lg-own { background: var(--own); border-color: var(--own) !important; }
+.lg-unknown { background: var(--surface); border-color: var(--muted) !important; border-style: dashed !important; }
+
+/* kaarten */
+.list { display: grid; gap: 8px; }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 6px; background: var(--surface); }
+.card.is-free { border-left: 5px solid var(--free); }
+.card.is-claimed { border-left: 5px solid var(--claimed); }
+.card.is-charge { border-left: 5px solid var(--sign); }
+.card .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.card .pid { font-family: var(--display); font-weight: 800; font-size: 19px; }
+.when { font-family: var(--mono); font-size: 14.5px; font-variant-numeric: tabular-nums; }
+.pill { font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; font-family: var(--display); white-space: nowrap; }
+.pill.free { background: var(--free-soft); color: var(--free); }
+.pill.claimed { background: var(--claimed-soft); color: var(--claimed); }
+.pill.charge { background: color-mix(in srgb, var(--sign) 14%, transparent); color: var(--sign); }
+.pill.neutral { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+.note { font-size: 14.5px; color: var(--muted); overflow-wrap: anywhere; }
+.dayhead { font-family: var(--display); font-weight: 600; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 4px; }
+.empty { padding: 14px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 15px; display: grid; gap: 10px; justify-items: start; }
+.bolt { fill: var(--sign); }
+.spot .boltbg { fill: var(--surface); stroke: var(--sign); stroke-width: 2; }
+.legend svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 5px; }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); cursor: pointer; min-height: 52px; }
+.toggle input { width: 22px; height: 22px; accent-color: var(--sign); flex: none; }
+ol.rules { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
+details summary { cursor: pointer; font-family: var(--display); font-weight: 600; color: var(--muted); font-size: 15px; min-height: 32px; }
+
+/* uitschuifpaneel */
+.scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 30; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 31; background: var(--surface); border-radius: 18px 18px 0 0; max-height: 88vh; overflow-y: auto; overscroll-behavior: contain;
+  padding: 8px max(16px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); display: grid; gap: 14px; }
+.sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line); justify-self: center; }
+.sheet .shead { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.sheet .x { background: var(--surface-2); border: 0; border-radius: 999px; width: 38px; height: 38px; font-size: 20px; cursor: pointer; flex: none; }
+@media (min-width: 700px) { .sheet { left: 50%; right: auto; transform: translateX(-50%); width: 520px; bottom: 24px; border-radius: 16px; max-height: 80vh; padding-bottom: 20px; } }
+@media (prefers-reduced-motion: no-preference) {
+  .sheet { animation: up .2s ease-out; }
+  @keyframes up { from { translate: 0 30px; opacity: .4; } to { translate: 0 0; opacity: 1; } }
+  .spot rect { transition: fill .2s, stroke .2s; }
+}
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 14px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 15px; z-index: 40; max-width: calc(100% - 32px); }
+
+html, body { margin: 0; }
+:root { padding-top: env(safe-area-inset-top, 0px); }
+img { max-width: 100%; }
+.auth { max-width: 440px; margin: 0 auto; padding-block: 28px calc(40px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 16px; }
+.auth .hero { display: flex; gap: 12px; align-items: center; }
+.auth .hero .psign { color: var(--sign); width: 52px; height: 52px; font-size: 32px; }
+select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; min-height: 46px; width: 100%; font-size: 16px; }
+input[type="email"], input[type="password"] { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; min-height: 46px; width: 100%; min-width: 0; font-size: 16px; }
+.linkbtn { background: none; border: 0; color: var(--sign); font: inherit; font-size: 15px; cursor: pointer; padding: 6px 0; text-align: left; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="psign" aria-hidden="true">P</div>
+    <div class="brand">
+      <h1>Parkeren Jutfasehof</h1>
+      <div class="sub">Peizerdiep · plekken P08 t/m P19</div>
+    </div>
+    <button class="whoami" id="whoami" hidden data-action="goto" data-tab="mijn">Kies je adres</button>
+  </div>
+</header>
+
+
+<main class="wrap" id="authScreen">
+  <div class="auth">
+    <div class="hero"><div class="psign" aria-hidden="true">P</div><div><h2 style="font-size:24px">Parkeren Jutfasehof</h2><div class="muted">Deel je parkeerplek met de buren als je weg bent.</div></div></div>
+    <div class="panel" id="loadingBox" hidden><span class="muted">Even laden…</span></div>
+    <div class="panel" id="loginBox">
+      <h2 id="authTitle">Inloggen</h2>
+      <form id="authForm" class="flat" novalidate>
+        <div class="field"><label for="authEmail">E-mailadres</label><input type="email" id="authEmail" autocomplete="email" inputmode="email" required></div>
+        <div class="field"><label for="authPw">Wachtwoord</label><input type="password" id="authPw" autocomplete="current-password" minlength="6" required></div>
+        <div id="signupExtra" class="flat" hidden>
+          <div class="field"><label for="authHouse">Je adres</label><select id="authHouse"></select></div>
+          <div class="field"><label for="authCode">Buurtcode</label><input type="text" id="authCode" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Staat in het bericht van je buren"></div>
+        </div>
+        <div class="err" id="authErr" hidden></div>
+        <button class="btn block" type="submit" id="authSubmit">Inloggen</button>
+      </form>
+      <button class="linkbtn" data-action="authswitch" id="authSwitch">Nieuw hier? Maak een account</button>
+      <button class="linkbtn" data-action="forgot" id="forgot">Wachtwoord vergeten</button>
+    </div>
+    <div class="panel" id="joinBox" hidden>
+      <h2>Buurtcode invullen</h2>
+      <p class="muted" style="margin:0">Alleen bewoners met de buurtcode kunnen de app gebruiken.</p>
+      <form id="joinForm" class="flat" novalidate>
+        <div class="field"><label for="joinHouse">Je adres</label><select id="joinHouse"></select></div>
+        <div class="field"><label for="joinCode">Buurtcode</label><input type="text" id="joinCode" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="err" id="joinErr" hidden></div>
+        <button class="btn block" type="submit">Doorgaan</button>
+      </form>
+      <button class="linkbtn" data-action="logout">Uitloggen</button>
+    </div>
+    <p class="muted small" style="margin:0">Alleen voor bewoners van Peizerdiep 15 t/m 27 en 32 t/m 38. Je e-mailadres wordt alleen gebruikt om in te loggen.</p>
+  </div>
+</main>
+
+<main class="wrap" id="appScreen" hidden>
+  <div id="banner" class="notices" style="margin-bottom:14px"></div>
+
+  <!-- OVERZICHT -->
+  <section data-tab="overzicht">
+    <div class="notices" id="notices"></div>
+    <div class="momentbar">
+      <div class="scroller" id="momentChips" role="group" aria-label="Kies moment"></div>
+      <div class="customMoment"><label for="momentInput">Ander moment</label><input type="datetime-local" id="momentInput" step="300"></div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <div class="row" style="justify-content:space-between;align-items:end">
+          <div><div class="eyebrow" id="momentEyebrow">Nu</div><h2 id="momentTitle">Op dit moment</h2></div>
+          <div class="stats">
+            <div class="stat free"><b id="freeCount">0</b><span class="muted small" id="freeLabel">vrij</span></div>
+            <div class="stat charge" id="chargeStat" hidden><b id="chargeCount">0</b><span class="muted small">met laadpaal</span></div>
+          </div>
+        </div>
+        <div class="mapbox" id="map"></div>
+        <div class="legend">
+          <span><i class="lg-free"></i>Vrij</span>
+          <span><i class="lg-claimed"></i>Geclaimd</span>
+          <span><i class="lg-own"></i>Eigenaar</span>
+          <span><i class="lg-unknown"></i>Niet gekoppeld</span>
+          <span><svg viewBox="0 0 12 20" aria-hidden="true"><path class="bolt" d="M8 0L0 11h5l-2 9 9-12H7z"/></svg>Openbare laadpaal</span>
+        </div>
+      </div>
+      <div class="flat">
+        <div class="panel">
+          <div class="row" style="justify-content:space-between">
+            <h2 id="optTitle">Vrije plekken</h2>
+            <button type="button" class="chip" id="onlyCharger" data-action="onlycharger" aria-pressed="false" hidden>Alleen met laadpaal</button>
+          </div>
+          <div class="list" id="options"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VRIJGEVEN -->
+  <section data-tab="vrijgeven" hidden>
+    <div class="panel" style="max-width:640px;width:100%;justify-self:center">
+      <div><div class="eyebrow">Afwezig?</div><h2>Geef je plek vrij</h2></div>
+      <div id="relNeedsSetup"></div>
+      <form id="relForm" class="flat" novalidate>
+        <div class="field"><span class="lbl">Welke plek</span><div class="chips" id="relSpots"></div></div>
+        <div class="field"><span class="lbl">Hoe vaak</span>
+          <div class="chips">
+            <button type="button" class="chip" id="modeOnce" aria-pressed="true" data-action="mode" data-mode="once">Eenmalig</button>
+            <button type="button" class="chip" id="modeRec" aria-pressed="false" data-action="mode" data-mode="rec">Elke week</button>
+          </div>
+        </div>
+        <div id="onceFields" class="flat">
+          <div class="field"><label for="relFrom">Vanaf</label><input type="datetime-local" id="relFrom" step="300"></div>
+          <div class="field"><label for="relUntil">Tot</label><input type="datetime-local" id="relUntil" step="300"></div>
+          <div class="scroller" id="quickUntil" role="group" aria-label="Snel kiezen"></div>
+        </div>
+        <div id="recFields" class="flat" hidden>
+          <div class="field"><span class="lbl">Op deze dagen</span><div class="chips" id="recDays"></div></div>
+          <div class="two">
+            <div class="field"><label for="recFrom">Van</label><input type="time" id="recFrom" value="08:00" step="300"></div>
+            <div class="field"><label for="recUntil">Tot</label><input type="time" id="recUntil" value="18:00" step="300"></div>
+          </div>
+          <p class="muted small" style="margin:0">Ligt de eindtijd voor de begintijd, dan loopt het door tot de volgende dag.</p>
+        </div>
+        <div class="field"><label for="relNote">Opmerking (mag leeg)</label><input type="text" id="relNote" maxlength="140" placeholder="Bijv. graag recht parkeren"></div>
+        <div class="err" id="relErr" hidden></div>
+        <button class="btn block" type="submit" id="relSubmit">Plek vrijgeven</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- VERZOEKEN -->
+  <section data-tab="verzoeken" hidden>
+    <div class="grid2">
+      <div class="panel">
+        <div><div class="eyebrow">Bezoek of klusbus?</div><h2>Vraag om een plek</h2></div>
+        <form id="reqForm" class="flat" novalidate>
+          <div class="field"><label for="reqFrom">Vanaf</label><input type="datetime-local" id="reqFrom" step="300"></div>
+          <div class="field"><label for="reqUntil">Tot</label><input type="datetime-local" id="reqUntil" step="300"></div>
+          <div class="field"><label for="reqNote">Waarvoor</label><input type="text" id="reqNote" maxlength="140" placeholder="Bijv. ouders komen eten"></div>
+          <div class="err" id="reqErr" hidden></div>
+          <button class="btn block" type="submit">Verzoek plaatsen</button>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>Wie zoekt een plek</h2>
+        <div class="list" id="requests"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MIJN -->
+  <section data-tab="mijn" hidden>
+    <div class="grid2">
+      <div class="flat">
+        <div class="panel">
+          <div><div class="eyebrow">Stap 1</div><h2>Op welk nummer woon je?</h2></div>
+          <div class="chips" id="houseChips"></div>
+          <div id="spotSetup" class="flat"></div>
+        </div>
+        <div class="panel" id="phonePanel">
+          <div><div class="eyebrow">Optioneel</div><h2>WhatsApp-nummer</h2></div>
+          <p class="muted small" style="margin:0">Met je nummer kunnen buren je met één tik een WhatsApp sturen, bijvoorbeeld als ze je plek claimen of als je eerder terugkomt. Je nummer is alleen zichtbaar voor bewoners in deze app.</p>
+          <div class="field"><label for="phone">Mobiel nummer</label><input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
+          <div class="row"><button class="btn sm" data-action="savephone">Opslaan</button><button class="btn ghost sm" data-action="delphone" id="delPhone" hidden>Nummer verwijderen</button></div>
+        </div>
+      </div>
+      <div class="flat">
+        <div class="panel">
+          <h2>Mijn vrijgaven en claims</h2>
+          <div class="list" id="mine"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INFO -->
+  <section data-tab="info" hidden>
+    <div class="panel" style="max-width:680px;width:100%;justify-self:center">
+      <h2>Spelregels</h2>
+      <ol class="rules">
+        <li>Parkeer alleen op een plek die vrijgegeven is en die je zelf geclaimd hebt.</li>
+        <li>Eerder weg dan gepland? Tik op "Ik ben weg", dan is de plek weer vrij.</li>
+        <li>Wees op tijd weg. De eigenaar moet op de eindtijd terecht kunnen.</li>
+        <li>Komt de eigenaar eerder terug, dan zie je dat bovenaan Overzicht. Zet je auto dan zo snel mogelijk weg.</li>
+        <li>Heeft een plek een openbare laadpaal, dan mag je laden zolang je die plek geclaimd hebt. Laden betaal je zelf via je laadpas.</li>
+        <li>Twijfel je, stuur elkaar even een berichtje.</li>
+      </ol>
+      <h3>Hoe het werkt</h3>
+      <p style="margin:0">Elke woning kiest bij "Mijn" het eigen huisnummer en de eigen plek. Je geeft je plek eenmalig vrij (bijvoorbeeld een weekend weg) of elke week (bijvoorbeeld werkdagen overdag). Buren kiezen op Overzicht een moment en zien welke plekken dan vrij zijn. Ze claimen er een, zodat er nooit twee auto's voor dezelfde plek komen.</p>
+      <p class="muted small" style="margin:0">Zichtbaar zijn alleen huisnummers. Een WhatsApp-nummer is optioneel. De app stuurt zelf geen berichten: je tikt op de WhatsApp-knop en verstuurt het bericht vanuit je eigen WhatsApp.</p>
+      <h3>Account</h3>
+      <div class="row" style="justify-content:space-between"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
+      <p class="muted small" style="margin:0">Tip: zet de app op je beginscherm. iPhone: deelknop, dan "Zet op beginscherm". Android: menu, dan "Toevoegen aan startscherm".</p>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs" id="tabs" hidden role="tablist" aria-label="Navigatie">
+  <button role="tab" data-tab="overzicht" aria-selected="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 17V7h3.5a3 3 0 0 1 0 6H9"/></svg>Overzicht</button>
+  <button role="tab" data-tab="vrijgeven" aria-selected="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Vrijgeven</button>
+  <button role="tab" data-tab="verzoeken" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>Verzoeken<span class="badge" id="reqBadge" hidden></span></button>
+  <button role="tab" data-tab="mijn" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-5h4v5"/></svg>Mijn</button>
+  <button role="tab" data-tab="info" aria-selected="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>Info</button>
+</nav>
+
+<div id="sheetRoot"></div>
+<div class="toast" id="toast" hidden role="status"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

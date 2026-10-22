@@ -1,0 +1,36 @@
+rules_version = '2';
+// Parkeren Jutfasehof: alleen ingelogde bewoners met de juiste buurtcode kunnen lezen en schrijven.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isMember() {
+      return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
+    function joinCode() {
+      return get(/databases/$(database)/documents/private/join).data.code;
+    }
+
+    // De buurtcode staat hier. Niemand kan dit document lezen of wijzigen via de app.
+    match /private/{docId} {
+      allow read, write: if false;
+    }
+
+    // Lidmaatschap: aanmaken kan alleen met de juiste buurtcode.
+    match /members/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.code == joinCode()
+        && request.resource.data.house is string;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.code == resource.data.code;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    // De gedeelde gegevens van de app.
+    match /{col}/{docId} {
+      allow read, write: if isMember()
+        && col in ['spots', 'houses', 'releases', 'recurring', 'claims', 'requests'];
+    }
+  }
+}
