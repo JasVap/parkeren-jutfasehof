@@ -7,7 +7,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, onSnapshot, query, where, addDoc, setDoc, updateDoc, deleteDoc,
-  getDoc, runTransaction, FieldPath,
+  getDoc, runTransaction, FieldPath, deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
@@ -23,6 +23,7 @@ const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H;
+const APP_VERSION = "2";
 
 const st = {
   user: null, member: null, house: null, live: false, unsubs: [],
@@ -59,6 +60,20 @@ function range(a, b) {
 const ownerOf = (p) => st.spots[p]?.house || null;
 const spotsOf = (h) => SPOTS.filter(p => ownerOf(p) === h);
 const hasCharger = (p) => !!st.spots[p]?.charger;
+// Plekken heten naar het huisnummer. Heeft een woning er twee, dan "27a" en "27b".
+function spotName(p) { const h = ownerOf(p); if (!h) return null; const list = spotsOf(h); return list.length > 1 ? h + "abcdefgh"[list.indexOf(p)] : h; }
+const spotNr = (p) => spotName(p) ? `nr ${spotName(p)}` : "plek zonder adres";
+const plekVan = (p) => spotName(p) ? `de plek van nr ${spotName(p)}` : "een plek zonder adres";
+const mineLabel = (p) => spotsOf(st.house).length > 1 ? `Plek ${spotName(p)}` : "Mijn plek";
+const DOW = ["zo","ma","di","wo","do","vr","za"];
+const fShortDate = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" });
+// Kort voor op de kaart: "16:00", "zo 16:00" of "1 nov".
+function shortWhen(ms) {
+  const diff = Math.round((sod(ms) - sod(now())) / D);
+  if (diff === 0) return hm(ms);
+  if (diff > 0 && diff < 7) return `${DOW[new Date(ms).getDay()]} ${hm(ms)}`;
+  return fShortDate.format(ms).replace(".", "");
+}
 const boltPill = `<span class="pill charge"><svg width="9" height="14" viewBox="0 0 12 20" aria-hidden="true" style="vertical-align:-2px"><path class="bolt" d="M8 0L0 11h5l-2 9 9-12H7z"/></svg> laadpaal</span>`;
 function toast(m) { const t = $("#toast"); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3500); }
 
@@ -70,8 +85,18 @@ function normPhone(v) {
   else if (d.startsWith("0")) d = "31" + d.slice(1);
   return /^\d{10,15}$/.test(d) ? d : null;
 }
-const phoneOf = (h) => normPhone(st.phones[h]?.phone);
-const waTo = (h, text) => { const p = phoneOf(h); return p ? `https://wa.me/${p}?text=${encodeURIComponent(text)}` : null; };
+// Per woning kunnen meerdere bewoners een naam en nummer opgeven (houses/{nr}.contacts.{uid}).
+// Een los "phone"-veld uit de eerste versie telt mee tot het is verwijderd.
+function contactsOf(h) {
+  const rec = st.phones[h] || {}, out = [];
+  for (const [uid, c] of Object.entries(rec.contacts || {})) { const ph = normPhone(c?.phone); if (ph) out.push({ uid, name: c.name || "", phone: ph }); }
+  const legacy = normPhone(rec.phone);
+  if (legacy && !out.some(c => c.phone === legacy)) out.push({ uid: null, name: "", phone: legacy });
+  return out;
+}
+function waBtns(h, text) {
+  return contactsOf(h).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(text)}`, c.name ? `App ${c.name}` : `App nr ${h}`)).join("");
+}
 const waShare = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`;
 const waIcon = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.3-.4.8-1.4.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.1.6a2.6 2.6 0 0 0 1.7-1.2 2.1 2.1 0 0 0 .2-1.2c-.1-.1-.3-.2-.5-.3z"/></svg>`;
 function waBtn(href, label) { return href ? `<a class="btn wa" href="${esc(href)}" target="_blank" rel="noopener">${waIcon}${esc(label)}</a>` : ""; }
@@ -101,32 +126,36 @@ const liveClaims = () => st.claims.filter(c => c.house && c.until > c.from);
 function claimsIn(w) { return liveClaims().filter(c => c.spot === w.spot && c.from < w.end && c.until > w.start).sort((a, b) => a.from - b.from); }
 function statusAt(p, t, wins) {
   const w = wins.find(w => w.spot === p && w.start <= t && w.end > t);
-  if (!w) return ownerOf(p) ? { cls: "own", text: `nr ${ownerOf(p)}` } : { cls: "unknown", text: "?" };
+  if (!w) return ownerOf(p) ? { cls: "own", text: "eigenaar" } : { cls: "unknown", text: "geen adres" };
   const cs = claimsIn(w);
   const c = cs.find(c => c.from <= t && c.until > t);
-  if (c) return { cls: "claimed", text: `nr ${c.house}`, w, c };
+  if (c) return { cls: "claimed", text: `→ nr ${c.house}`, w, c };
   const next = cs.find(c => c.from > t);
   const freeUntil = next ? next.from : w.end;
-  return { cls: "free", text: `tot ${hm(freeUntil)}`, w, freeUntil };
+  return { cls: "free", text: `tot ${shortWhen(freeUntil)}`, w, freeUntil };
 }
 
 /* ---------- plattegrond ---------- */
 const GEO = {};
 ["P19","P18","P17","P16","P15"].forEach((p, i) => GEO[p] = { x: 20, y: 160 + i * 80 });
 ["P08","P09","P10","P11","P12","P13","P14"].forEach((p, i) => GEO[p] = { x: 260, y: 20 + i * 80 });
-function renderMap(wins) {
+function renderMap(wins, target = "#map", mode = "status") {
   const t = T();
   let svg = "";
   for (const p of SPOTS) {
-    const s = statusAt(p, t, wins), g = GEO[p];
-    const mine = st.house && ownerOf(p) === st.house;
-    svg += `<g class="spot ${s.cls}${mine ? " mine" : ""}" data-action="spot" data-spot="${p}" tabindex="0" role="button" aria-label="${p}: ${esc(s.cls === "free" ? "vrij " + s.text : s.text)}">
+    const g = GEO[p], o = ownerOf(p);
+    const mine = st.house && o === st.house;
+    let s = statusAt(p, t, wins);
+    if (mode === "link") s = mine ? { cls: "linkmine", text: "jouw plek" } : o ? { cls: "own", text: "" } : { cls: "unknown", text: "tik = mijn plek" };
+    const big = spotName(p) || "?";
+    svg += `<g class="spot ${s.cls}${mine && mode !== "link" ? " mine" : ""}" data-action="${mode === "link" ? "linktap" : "spot"}" data-spot="${p}" tabindex="0" role="button" aria-label="${esc(spotNr(p))}: ${esc(s.cls === "free" ? "vrij " + s.text : s.text)}">
       <rect x="${g.x + 3}" y="${g.y + 3}" width="94" height="74" rx="5"/>
-      <text class="pnum" x="${g.x + 50}" y="${g.y + 40}" text-anchor="middle">${p}</text>
+      <text class="pnum" x="${g.x + 50}" y="${g.y + 40}" text-anchor="middle">${esc(big)}</text>
       <text class="pstate" x="${g.x + 50}" y="${g.y + 62}" text-anchor="middle">${esc(s.text)}</text>
       ${hasCharger(p) ? `<circle class="boltbg" cx="${g.x + 82}" cy="${g.y + 18}" r="11"/><path class="bolt" transform="translate(${g.x + 76} ${g.y + 9}) scale(.9)" d="M8 0L0 11h5l-2 9 9-12H7z"/>` : ""}</g>`;
   }
-  $("#map").innerHTML = `<svg viewBox="-95 -45 570 690" role="img" aria-label="Plattegrond parkeerterrein">
+  const box = $(target); if (!box) return;
+  box.innerHTML = `<svg viewBox="-95 -45 570 690" role="img" aria-label="Plattegrond parkeerterrein">
     <g transform="rotate(22 190 300)">
       <rect x="125" y="-20" width="130" height="640" fill="var(--paving)"/>
       <rect x="0" y="150" width="18" height="420" fill="var(--verge)"/>
@@ -173,21 +202,21 @@ function renderOptions(wins) {
   if (!free.length) {
     const next = wins.map(w => ({ w, s: statusAt(w.spot, Math.max(w.start, t), wins) })).find(x => x.w.start > t && x.s.cls === "free");
     html = `<div class="empty"><span>Op dit moment is er geen plek vrij.</span>
-      ${next ? `<span>Eerstvolgende: <strong>${next.w.spot}</strong> vanaf ${esc(when(next.w.start))}. <a href="#" data-action="moment" data-v="${next.w.start}">Bekijk</a></span>` : ""}
+      ${next ? `<span>Eerstvolgende: <strong>${esc(plekVan(next.w.spot))}</strong> vanaf ${esc(when(next.w.start))}. <a href="#" data-action="moment" data-v="${next.w.start}">Bekijk</a></span>` : ""}
       <button class="btn sm ghost" data-action="goto" data-tab="verzoeken">Vraag om een plek</button></div>`;
   } else {
     html = free.map(([p, s]) => {
       const mine = st.house && s.w.house === st.house;
       const canClaim = !mine && st.house && s.freeUntil > now();
-      return `<div class="card is-free"><div class="head"><span class="pid">${p}</span><span class="muted">van nr ${esc(s.w.house)}</span>${hasCharger(p) ? boltPill : ""}${s.w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}${mine ? `<span class="pill neutral">jouw plek</span>` : ""}</div>
+      return `<div class="card is-free"><div class="head"><span class="pid">${esc(spotNr(p))}</span>${hasCharger(p) ? boltPill : ""}${s.w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}${mine ? `<span class="pill neutral">jouw plek</span>` : ""}</div>
         <div class="when">vrij ${esc(range(t, s.freeUntil))}</div>
         ${s.w.note ? `<div class="note">${esc(s.w.note)}</div>` : ""}
-        ${canClaim ? `<button class="btn green sm" data-action="claimsheet" data-key="${s.w.key}">Claim ${p}</button>` : ""}</div>`;
+        ${canClaim ? `<button class="btn green sm" data-action="claimsheet" data-key="${s.w.key}">Claim deze plek</button>` : ""}</div>`;
     }).join("");
   }
   if (taken.length) {
     html += `<details><summary>${taken.length} geclaimd door buren</summary><div class="list" style="margin-top:8px">${taken.map(([p, s]) =>
-      `<div class="card is-claimed"><div class="head"><span class="pid">${p}</span><span class="pill claimed">nr ${esc(s.c.house)}</span></div><div class="when">${esc(range(s.c.from, s.c.until))}</div></div>`).join("")}</div></details>`;
+      `<div class="card is-claimed"><div class="head"><span class="pid">${esc(spotNr(p))}</span><span class="pill claimed">bezet door nr ${esc(s.c.house)}</span></div><div class="when">${esc(range(s.c.from, s.c.until))}</div></div>`).join("")}</div></details>`;
   }
   $("#options").innerHTML = html;
 }
@@ -198,16 +227,16 @@ function renderNotices() {
       if (c.house !== st.house) continue;
       if (c.earlyReturn && c.earlyReturn > n - 2 * H) {
         const gone = !(c.until > c.from);
-        out.push(`<div class="notice warn"><strong>Nr ${esc(c.owner)} komt eerder terug</strong><span>${gone ? `Je claim op ${esc(c.spot)} vervalt.` : `Zet je auto op ${esc(c.spot)} weg voor ${esc(when(c.earlyReturn))}.`}</span>
+        out.push(`<div class="notice warn"><strong>Nr ${esc(c.owner)} komt eerder terug</strong><span>${gone ? `Je claim op ${esc(plekVan(c.spot))} vervalt.` : `Zet je auto op ${esc(plekVan(c.spot))} weg voor ${esc(when(c.earlyReturn))}.`}</span>
           <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="ack" data-id="${c.id}" data-spot="${c.spot}">Begrepen</button></div></div>`);
       } else if (c.until > c.from && c.from <= n && c.until > n) {
         const soon = c.until - n <= H;
-        out.push(`<div class="notice ${soon ? "amber" : "green"}"><strong>${soon ? `Je claim op ${esc(c.spot)} loopt bijna af` : `Je staat op ${esc(c.spot)}`}</strong><span>Tot ${esc(when(c.until))}.</span>
+        out.push(`<div class="notice ${soon ? "amber" : "green"}"><strong>${soon ? `Je claim op ${esc(plekVan(c.spot))} loopt bijna af` : `Je staat op ${esc(plekVan(c.spot))}`}</strong><span>Tot ${esc(when(c.until))}.</span>
           <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">Ik ben weg</button></div></div>`);
       }
     }
     for (const c of liveClaims()) {
-      if (c.owner === st.house && c.from <= n && c.until > n) out.push(`<div class="notice"><strong>Nr ${esc(c.house)} staat op jouw ${esc(c.spot)}</strong><span>Tot ${esc(when(c.until))}. Eerder terug? Zie Mijn.</span></div>`);
+      if (c.owner === st.house && c.from <= n && c.until > n) out.push(`<div class="notice"><strong>Nr ${esc(c.house)} staat op ${esc(mineLabel(c.spot).replace("Mijn plek", "jouw plek").replace("Plek", "jouw plek"))}</strong><span>Tot ${esc(when(c.until))}. Eerder terug? Zie Mijn.</span></div>`);
     }
   }
   const openReq = st.requests.filter(r => !r.offeredSpot && r.until > n && r.house !== st.house).length;
@@ -220,8 +249,7 @@ function renderBanner() {
   if (!st.house) b.push(`<div class="notice green"><strong>Welkom</strong><span>Kies je huisnummer en je plek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>.</span></div>`);
   else if (!spotsOf(st.house).length) b.push(`<div class="notice green"><span>Koppel je parkeerplek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>, dan kun je hem vrijgeven.</span></div>`);
   $("#banner").innerHTML = b.join("");
-  const my = st.house ? spotsOf(st.house) : [];
-  $("#whoami").textContent = st.house ? `nr ${st.house}${my.length ? " · " + my.join("+") : ""}` : "Kies je adres";
+  $("#whoami").textContent = st.house ? `nr ${st.house}` : "Kies je adres";
 }
 
 /* ---------- vrijgeven ---------- */
@@ -241,7 +269,7 @@ function renderRelForm() {
   for (const p of [...st.relSpots]) if (!my.includes(p)) st.relSpots.delete(p);
   if (my.length === 1 && !st.relSpots.size) st.relSpots.add(my[0]);
   $("#relNeedsSetup").innerHTML = !st.house || !my.length ? `<div class="notice green"><span>Koppel eerst je huisnummer en plek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>.</span></div>` : "";
-  $("#relSpots").innerHTML = my.length ? my.map(p => `<button type="button" class="chip" data-action="relspot" data-spot="${p}" aria-pressed="${st.relSpots.has(p)}">${p}</button>`).join("") : `<span class="muted">Nog geen plek gekoppeld.</span>`;
+  $("#relSpots").innerHTML = my.length ? my.map(p => `<button type="button" class="chip" data-action="relspot" data-spot="${p}" aria-pressed="${st.relSpots.has(p)}">${esc(mineLabel(p))}</button>`).join("") : `<span class="muted">Nog geen plek gekoppeld.</span>`;
   $("#relSubmit").disabled = !my.length;
   $("#modeOnce").setAttribute("aria-pressed", st.relMode === "once");
   $("#modeRec").setAttribute("aria-pressed", st.relMode === "rec");
@@ -259,11 +287,11 @@ function renderRequests(wins) {
   const my = st.house ? spotsOf(st.house) : [];
   $("#requests").innerHTML = list.map(r => {
     let act = "";
-    if (r.offeredSpot) act = `<span class="pill free">Geregeld: ${esc(r.offeredSpot)} van nr ${esc(r.offeredBy)}</span>`;
+    if (r.offeredSpot) act = `<span class="pill free">Geregeld: plek van nr ${esc(r.offeredBy)}</span>`;
     else if (r.house === st.house) act = `<div class="row"><a class="btn wa sm" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(r.from, r.until)} een parkeerplek vrij? ${r.note ? "(" + r.note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a><button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Intrekken</button></div>`;
     else if (st.house && my.length) act = `<div class="row">${my.map(p => {
       const busy = wins.some(w => w.spot === p && w.start < r.until && w.end > r.from);
-      return `<button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}" ${busy ? "disabled" : ""}>Bied ${p} aan</button>`; }).join("")}</div>`;
+      return `<button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}" ${busy ? "disabled" : ""}>Bied ${my.length > 1 ? esc(spotName(p)) : "je plek"} aan</button>`; }).join("")}</div>`;
     return `<div class="card ${r.offeredSpot ? "is-free" : ""}"><div class="head"><span class="pid">nr ${esc(r.house)}</span><span class="muted">zoekt een plek</span></div>
       <div class="when">${esc(range(r.from, r.until))}</div>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}${act}</div>`;
   }).join("");
@@ -273,19 +301,27 @@ function renderRequests(wins) {
 function renderMine(wins) {
   $("#houseChips").innerHTML = HOUSES.map(h => `<button type="button" class="chip" data-action="house" data-h="${h}" aria-pressed="${st.house === h}">${h}</button>`).join("");
   $("#phonePanel").hidden = !st.house;
-  if (st.house && document.activeElement !== $("#phone")) $("#phone").value = st.phones[st.house]?.phone || "";
-  $("#delPhone").hidden = !st.phones[st.house]?.phone;
+  if (st.house) {
+    const rec = st.phones[st.house] || {}, me = (rec.contacts || {})[st.user.uid];
+    if (!document.activeElement?.matches?.("#phone,#cname")) { $("#phone").value = me?.phone || ""; $("#cname").value = me?.name || ""; }
+    $("#delPhone").hidden = !me;
+    const others = contactsOf(st.house).filter(c => c.uid !== st.user.uid);
+    $("#housemates").innerHTML = others.length ? `<div class="note">Ook bereikbaar voor nr ${esc(st.house)}: ${others.map(c => c.name ? esc(c.name) : `nummer zonder naam (${esc(rec.phone || "")})`).join(", ")}.</div>
+      ${others.some(c => !c.uid) ? `<div class="row"><button class="btn ghost sm" data-action="dellegacy">Nummer zonder naam verwijderen</button></div>` : ""}` : "";
+  }
   $("#accountLine").textContent = st.user ? `Ingelogd als ${st.user.email}` : "";
   if (!st.house) {
     $("#spotSetup").innerHTML = "";
     $("#mine").innerHTML = `<div class="empty">Kies eerst je huisnummer.</div>`;
     return;
   }
-  $("#spotSetup").innerHTML = `<div><div class="eyebrow">Stap 2</div><h2>Welke plek hoort bij nr ${esc(st.house)}?</h2></div>
-    <div class="chips">${SPOTS.map(p => { const o = ownerOf(p), mine = o === st.house, other = o && !mine;
-      return `<button type="button" class="chip" data-action="linkspot" data-spot="${p}" aria-pressed="${mine}" ${other ? "disabled" : ""}>${p}${other ? `<span class="tag">nr ${esc(o)}</span>` : ""}</button>`; }).join("")}</div>
-    <p class="muted small" style="margin:0">Tik om je plek te koppelen of los te koppelen.</p>
-    ${spotsOf(st.house).map(p => `<label class="toggle" for="ch_${p}"><span><strong>${p}</strong> heeft een openbare laadpaal die buren mogen gebruiken</span><input type="checkbox" id="ch_${p}" data-action="togglecharger" data-spot="${p}" ${hasCharger(p) ? "checked" : ""}></label>`).join("")}`;
+  if (!$("#linkMap")) {
+    $("#spotSetup").innerHTML = `<div><div class="eyebrow">Stap 2</div><h2>Welke plek is van jou?</h2></div>
+      <p class="muted small" style="margin:0">Tik op de kaart op je eigen plek. Nog een keer tikken maakt hem weer los.</p>
+      <div class="mapbox" id="linkMap"></div><div id="chargerToggles" class="flat"></div>`;
+  }
+  renderMap(wins, "#linkMap", "link");
+  $("#chargerToggles").innerHTML = spotsOf(st.house).map(p => `<label class="toggle" for="ch_${p}"><span><strong>${esc(mineLabel(p))}</strong> heeft een openbare laadpaal die buren mogen gebruiken</span><input type="checkbox" id="ch_${p}" data-action="togglecharger" data-spot="${p}" ${hasCharger(p) ? "checked" : ""}></label>`).join("");
   const n = now();
   const mineW = wins.filter(w => w.house === st.house && w.end > n).slice(0, 12);
   const myClaims = liveClaims().filter(c => c.house === st.house && c.until > n).sort((a, b) => a.from - b.from);
@@ -293,20 +329,20 @@ function renderMine(wins) {
   let html = `<div class="dayhead">Mijn plek vrijgegeven</div>`;
   html += mineW.length ? mineW.map(w => {
     const cs = claimsIn(w);
-    return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="head"><span class="pid">${w.spot}</span>${w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}
+    return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="head"><span class="pid">${esc(mineLabel(w.spot))}</span>${w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}
       ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} ${hm(c.from)}-${hm(c.until)}</span>`).join("")}${cs.length ? "" : `<span class="pill free">nog niet geclaimd</span>`}</div>
       <div class="when">${esc(range(w.start, w.end))}</div>
       <div class="row"><button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > n ? "Wijzigen of intrekken" : "Ik kom eerder terug"}</button></div></div>`;
   }).join("") : `<div class="empty">Je plek staat nu niet vrijgegeven. <button class="btn sm ghost" data-action="goto" data-tab="vrijgeven">Vrijgeven</button></div>`;
   if (recs.length) {
-    html += `<div class="dayhead">Wekelijks</div>` + recs.map(r => `<div class="card"><div class="head"><span class="pid">${esc(r.spot)}</span><span class="pill neutral">wekelijks</span></div>
+    html += `<div class="dayhead">Wekelijks</div>` + recs.map(r => `<div class="card"><div class="head"><span class="pid">${esc(mineLabel(r.spot))}</span><span class="pill neutral">wekelijks</span></div>
       <div class="when">${DAYS.filter(([d]) => (r.days || []).includes(d)).map(([, l]) => l).join(" ")} · ${esc(r.fromTime)} tot ${esc(r.untilTime)}</div>
       <div class="row"><button class="btn danger sm" data-action="stoprec" data-ref="${r.id}">Stop herhaling</button></div></div>`).join("");
   }
   html += `<div class="dayhead">Mijn claims</div>`;
-  html += myClaims.length ? myClaims.map(c => `<div class="card is-claimed"><div class="head"><span class="pid">${esc(c.spot)}</span><span class="muted">van nr ${esc(c.owner)}</span></div>
+  html += myClaims.length ? myClaims.map(c => `<div class="card is-claimed"><div class="head"><span class="pid">${esc(spotNr(c.spot))}</span></div>
     <div class="when">${esc(range(c.from, c.until))}</div>
-    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Claim intrekken"}</button>${waBtn(waTo(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw plek ${c.spot}. Groet!`), "Bericht eigenaar")}</div></div>`).join("") : `<div class="empty">Je hebt geen plek van een buur geclaimd.</div>`;
+    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Claim intrekken"}</button>${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("") : `<div class="empty">Je hebt geen plek van een buur geclaimd.</div>`;
   $("#mine").innerHTML = html;
 }
 
@@ -332,10 +368,11 @@ function closeSheet() { st.sheet = null; $("#sheetRoot").innerHTML = ""; documen
 function spotSheet(p) {
   const wins = windows(), t = T(), s = statusAt(p, t, wins), own = ownerOf(p);
   const up = wins.filter(w => w.spot === p && w.end > now()).slice(0, 6);
-  const head = s.cls === "free" ? `<span class="pill free">vrij ${esc(s.text)}</span>` : s.cls === "claimed" ? `<span class="pill claimed">geclaimd door nr ${esc(s.c.house)} tot ${hm(s.c.until)}</span>` : s.cls === "own" ? `<span class="pill neutral">eigenaar gebruikt hem</span>` : `<span class="pill neutral">nog niet gekoppeld</span>`;
+  const head = s.cls === "free" ? `<span class="pill free">vrij tot ${esc(when(s.freeUntil))}</span>` : s.cls === "claimed" ? `<span class="pill claimed">bezet door nr ${esc(s.c.house)} tot ${esc(when(s.c.until))}</span>` : s.cls === "own" ? `<span class="pill neutral">eigenaar gebruikt hem</span>` : `<span class="pill neutral">nog niet gekoppeld</span>`;
   const mine = st.house && own === st.house;
-  openSheet(`Plek ${p}`, `<div class="row"><span class="muted">${own ? `${STREET} ${esc(own)}` : "Nog niet aan een woning gekoppeld"}</span>${head}${hasCharger(p) ? boltPill : ""}</div>
-    ${s.cls === "free" && !mine && st.house ? `<button class="btn green block" data-action="claimsheet" data-key="${s.w.key}">Claim ${p}</button>` : ""}
+  openSheet(own ? `Plek van nr ${spotName(p)}` : "Plek zonder adres", `<div class="row"><span class="muted">${own ? `${STREET} ${esc(own)}` : "Nog niet aan een woning gekoppeld"}</span>${head}${hasCharger(p) ? boltPill : ""}</div>
+    ${!own && st.house ? `<button class="btn block" data-action="linkspot" data-spot="${p}">Dit is mijn plek</button>` : ""}
+    ${s.cls === "free" && !mine && st.house ? `<button class="btn green block" data-action="claimsheet" data-key="${s.w.key}">Claim deze plek</button>` : ""}
     <div class="dayhead">Gepland vrij</div>
     ${up.length ? `<div class="list">${up.map(w => { const cs = claimsIn(w);
       return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="when">${esc(range(w.start, w.end))}</div>
@@ -353,20 +390,20 @@ function claimSheet(key) {
   const cs = claimsIn(w);
   const next = cs.find(c => c.from >= from);
   const until = next ? next.from : w.end;
-  openSheet(`Claim ${w.spot}`, `
-    <div class="muted">Van nr ${esc(w.house)} · vrijgegeven ${esc(range(w.start, w.end))}</div>
+  openSheet(`Claim ${plekVan(w.spot)}`, `
+    <div class="muted">Vrijgegeven ${esc(range(w.start, w.end))}</div>
     ${hasCharger(w.spot) ? `<div>${boltPill}</div>` : ""}
     ${cs.length ? `<div class="note">Al geclaimd: ${cs.map(c => `nr ${esc(c.house)} ${esc(range(c.from, c.until))}`).join(", ")}</div>` : ""}
     <div class="field"><label for="cFrom">Ik sta er vanaf</label><input type="datetime-local" id="cFrom" step="300" value="${toInput(from)}"></div>
     <div class="field"><label for="cUntil">Tot</label><input type="datetime-local" id="cUntil" step="300" value="${toInput(until)}"></div>
     <div class="err" id="cErr" hidden></div>
-    <button class="btn green block" data-action="claim" data-key="${key}">Claim ${w.spot}</button>`);
+    <button class="btn green block" data-action="claim" data-key="${key}">Claim deze plek</button>`);
 }
 function earlySheet(key) {
   const w = windows().find(x => x.key === key); if (!w) return;
   const future = w.start > now();
   const cs = claimsIn(w);
-  openSheet(future ? `${w.spot} wijzigen` : `Eerder terug op ${w.spot}`, `
+  openSheet(future ? `${mineLabel(w.spot)} wijzigen` : "Eerder terug", `
     <div class="when">${esc(range(w.start, w.end))}</div>
     ${cs.length ? `<div class="notice amber"><span>Geclaimd door ${cs.map(c => `nr ${esc(c.house)} (${esc(range(c.from, c.until))})`).join(", ")}. Zij zien je wijziging bovenaan in de app.</span></div>` : ""}
     <div class="field"><label for="eTime">${future ? "Vrij tot" : "Ik ben terug om"}</label><input type="datetime-local" id="eTime" step="300" value="${toInput(future ? w.end : Math.min(w.end, round5(now() + 30 * MIN)))}"></div>
@@ -412,12 +449,32 @@ async function linkSpot(p) {
 async function setCharger(p, on) {
   if (ownerOf(p) !== st.house) return;
   if (await guard(() => setDoc(doc(fs, "spots", p), { house: st.house, charger: !!on, updatedAt: now() })))
-    toast(on ? `${p} staat nu met laadpaal op de kaart.` : `Laadpaal bij ${p} verwijderd.`);
+    toast(on ? "De laadpaal staat nu op de kaart." : "Laadpaal verwijderd.");
 }
 async function savePhone(del) {
-  const v = del ? "" : $("#phone").value.trim();
-  if (v && !normPhone(v)) { toast("Dat lijkt geen geldig mobiel nummer."); return; }
-  if (await guard(() => setDoc(doc(fs, "houses", st.house), { phone: v || null, updatedAt: now() }))) toast(v ? "Nummer opgeslagen." : "Nummer verwijderd.");
+  const ref = doc(fs, "houses", st.house);
+  if (del) {
+    if (await guard(() => updateDoc(ref, new FieldPath("contacts", st.user.uid), deleteField()))) toast("Je nummer is verwijderd.");
+    return;
+  }
+  const name = $("#cname").value.trim().slice(0, 30), v = $("#phone").value.trim();
+  if (!name) { toast("Vul je voornaam in."); return; }
+  if (!normPhone(v)) { toast("Dat lijkt geen geldig mobiel nummer."); return; }
+  if (await guard(() => setDoc(ref, { contacts: { [st.user.uid]: { name, phone: v, updatedAt: now() } }, updatedAt: now() }, { merge: true }))) toast("Opgeslagen.");
+}
+async function delLegacy() {
+  if (await guard(() => updateDoc(doc(fs, "houses", st.house), { phone: deleteField() }))) toast("Nummer zonder naam verwijderd.");
+}
+function linkTap(p) {
+  const o = ownerOf(p);
+  if (!o) { linkSpot(p); return; }
+  if (o === st.house) {
+    openSheet("Plek loskoppelen?", `<p style="margin:0">Deze plek hoort nu bij nr ${esc(st.house)}. Wil je hem loskoppelen?</p>
+      <button class="btn danger block" data-action="unlinkspot" data-spot="${p}">Loskoppelen</button>
+      <button class="btn ghost block" data-action="closesheet">Annuleren</button>`);
+    return;
+  }
+  toast(`Deze plek hoort bij nr ${o}. Klopt dat niet? Vraag nr ${o} om hem los te koppelen.`);
 }
 async function submitRelease(ev) {
   ev.preventDefault();
@@ -450,20 +507,20 @@ async function submitRelease(ev) {
         mf = f; mu = u;
       }
     });
-    if (ok) { $("#relNote").value = ""; afterRelease(`${spots.join(" en ")} is ${merged ? "nu " : ""}vrij ${range(mf, mu)}`, merged); }
+    if (ok) { $("#relNote").value = ""; afterRelease(`${spots.map(mineLabel).join(" en ")} is ${merged ? "nu " : ""}vrij ${range(mf, mu)}`, `vrij ${range(mf, mu)}`, merged); }
   } else {
     const days = [...st.recDays], ft = $("#recFrom").value, ut = $("#recUntil").value;
     if (!days.length) return fail("Kies minstens één dag.");
     if (!ft || !ut || ft === ut) return fail("Vul een begin- en eindtijd in die verschillen.");
     const ok = await guard(async () => { for (const p of spots) await addDoc(collection(fs, "recurring"), { spot: p, house: st.house, days, fromTime: ft, untilTime: ut, note, since: sod(now()), overrides: {}, createdAt: now() }); });
-    if (ok) { $("#relNote").value = ""; afterRelease(`${spots.join(" en ")} is elke ${DAYS.filter(([d]) => days.includes(d)).map(([, l]) => l).join(", ")} vrij van ${ft} tot ${ut}`); }
+    if (ok) { const dd = `elke ${DAYS.filter(([d]) => days.includes(d)).map(([, l]) => l).join(", ")} vrij van ${ft} tot ${ut}`; $("#relNote").value = ""; afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, dd); }
   }
 }
-function afterRelease(txt, merged) {
+function afterRelease(txt, shareTxt, merged) {
   setTab("overzicht");
   openSheet("Vrijgegeven", `<div class="notice green"><span>${esc(txt)}.${merged ? " Samengevoegd met je eerdere vrijgave." : ""}</span></div>
     <p class="muted" style="margin:0">Wil je het de buren laten weten?</p>
-    <a class="btn wa block" href="${esc(waShare(`Hoi buren! Mijn parkeerplek ${txt}. Claimen kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
+    <a class="btn wa block" href="${esc(waShare(`Hoi buren! De parkeerplek van ${STREET} ${st.house} is ${shareTxt}. Claimen kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function claim(key) {
@@ -482,9 +539,10 @@ async function claim(key) {
       items.push({ id: rid(), owner: w.house, windowStart: w.start, windowEnd: w.end, house: st.house, from: f, until: u, earlyReturn: null, createdAt: now() });
     });
   } catch (e) { console.warn(e); return fail(e instanceof UserError ? e.message : "Claimen lukte niet. Probeer het zo nog eens."); }
-  const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw plek ${w.spot} geclaimd, ${range(f, u)}. Dank je wel!`;
-  sheetBody(`<div class="notice green"><strong>${w.spot} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
-    ${waBtn(waTo(w.house, msg), `Laat nr ${w.house} het weten`)}
+  const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
+  const btns = waBtns(w.house, msg);
+  sheetBody(`<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
+    ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : ""}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function unclaim(id, spot) {
@@ -494,7 +552,7 @@ async function unclaim(id, spot) {
     if (c.earlyReturn || c.from > now()) items.splice(i, 1);
     else c.until = Math.max(c.from, now());
   }));
-  toast(`${spot} is weer vrij.`);
+  toast("De plek is weer vrij.");
 }
 async function ack(id, spot) {
   await guard(() => mutateClaims(spot, (items) => { const c = items.find(c => c.id === id); if (c) c.earlyReturn = null; }));
@@ -512,9 +570,9 @@ async function changeEnd(key, t) {
     });
   });
   if (!ok) return;
-  const msgFor = (c) => `Hoi, ik (${STREET} ${st.house}) kom eerder terug. Wil je ${w.spot} ${end <= c.from ? "toch niet gebruiken" : `vrijmaken voor ${when(end)}`}? Sorry en dank je!`;
-  sheetBody(`<div class="notice green"><span>${end <= w.start ? `${w.spot} wordt niet vrijgegeven.` : `${w.spot} is weer van jou vanaf ${esc(when(end))}.`}</span></div>
-    ${hit.map(c => waBtn(waTo(c.house, msgFor(c)), `Waarschuw nr ${c.house}`) || `<div class="note">Nr ${esc(c.house)} heeft geen WhatsApp-nummer ingevuld. Ze zien het in de app.</div>`).join("")}
+  const msgFor = (c) => `Hoi, ik (${STREET} ${st.house}) kom eerder terug. Wil je mijn parkeerplek ${end <= c.from ? "toch niet gebruiken" : `vrijmaken voor ${when(end)}`}? Sorry en dank je!`;
+  sheetBody(`<div class="notice green"><span>${end <= w.start ? `${esc(mineLabel(w.spot))} wordt niet vrijgegeven.` : `${esc(mineLabel(w.spot))} is weer van jou vanaf ${esc(when(end))}.`}</span></div>
+    ${hit.map(c => { const b = waBtns(c.house, msgFor(c)); return b ? `<p class="muted" style="margin:0">Waarschuw nr ${esc(c.house)}:</p>${b}` : `<div class="note">Nr ${esc(c.house)} heeft geen WhatsApp-nummer ingevuld. Ze zien het in de app.</div>`; }).join("")}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function stopRec(id) { if (await guard(() => deleteDoc(doc(fs, "recurring", id)))) toast("Herhaling gestopt."); }
@@ -542,8 +600,8 @@ async function offer(id, p) {
     await mutateClaims(p, (items) => { items.push({ id: rid(), owner: st.house, windowStart: r.from, windowEnd: r.until, house: r.house, from: r.from, until: r.until, earlyReturn: null, createdAt: now() }); });
     await updateDoc(doc(fs, "requests", id), { offeredBy: st.house, offeredSpot: p });
   });
-  if (ok) openSheet("Aangeboden", `<div class="notice green"><span>${p} staat klaar voor nr ${esc(r.house)}, ${esc(range(r.from, r.until))}.</span></div>
-    ${waBtn(waTo(r.house, `Hoi! Je kunt ${range(r.from, r.until)} op mijn plek ${p} staan. Groet, ${STREET} ${st.house}`), `Laat nr ${r.house} het weten`)}
+  if (ok) openSheet("Aangeboden", `<div class="notice green"><span>Je plek staat klaar voor nr ${esc(r.house)}, ${esc(range(r.from, r.until))}.</span></div>
+    ${waBtns(r.house, `Hoi! Je kunt ${range(r.from, r.until)} op mijn parkeerplek staan. Groet, ${STREET} ${st.house}`)}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function delReq(id) { if (await guard(() => deleteDoc(doc(fs, "requests", id)))) toast("Verzoek ingetrokken."); }
@@ -709,7 +767,11 @@ document.addEventListener("click", (e) => {
     case "closesheet": closeSheet(); break;
     case "gotorel": closeSheet(); st.relSpots = new Set([d.spot]); st.relMode = "once"; setTab("vrijgeven"); renderRelForm(); break;
     case "house": setHouse(d.h); break;
-    case "linkspot": linkSpot(d.spot); break;
+    case "linkspot": closeSheet(); linkSpot(d.spot); break;
+    case "unlinkspot": closeSheet(); linkSpot(d.spot); break;
+    case "linktap": linkTap(d.spot); break;
+    case "dellegacy": delLegacy(); break;
+    case "reload": location.reload(); break;
     case "togglecharger": setCharger(d.spot, el.checked); break;
     case "onlycharger": st.onlyCharger = !st.onlyCharger; render(); break;
     case "savephone": savePhone(false); break;
@@ -727,7 +789,7 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && st.sheet) closeSheet();
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g.spot")) { e.preventDefault(); spotSheet(e.target.dataset.spot); }
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g.spot")) { e.preventDefault(); e.target.dataset.action === "linktap" ? linkTap(e.target.dataset.spot) : spotSheet(e.target.dataset.spot); }
 });
 document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
 $("#momentInput").addEventListener("change", (e) => { const v = fromInput(e.target.value); st.moment = isNaN(v) ? null : v; render(); });
@@ -750,3 +812,15 @@ $("#authHouse").innerHTML = houseOpts;
 $("#joinHouse").innerHTML = houseOpts;
 renderAuthMode();
 setInterval(() => { if (!st.sheet && !document.activeElement?.matches?.("input,select")) render(); }, 60e3);
+// Nieuwe versie online gezet? Dan een melding met een knop om te vernieuwen.
+async function checkVersion() {
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j.v && String(j.v) !== APP_VERSION) $("#updateBar").hidden = false;
+  } catch {}
+}
+checkVersion();
+setInterval(checkVersion, 15 * 60e3);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkVersion(); });

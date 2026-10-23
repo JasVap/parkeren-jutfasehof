@@ -152,11 +152,15 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .spot.unknown rect { fill: var(--surface); stroke-dasharray: 6 5; }
 .spot:focus-visible rect { stroke: var(--sign); stroke-opacity: 1; stroke-width: 5; }
 .spot text { fill: var(--ink); font-family: var(--display); pointer-events: none; }
-.spot .pnum { font-weight: 800; font-size: 25px; }
-.spot .pstate { font-size: 16px; fill: var(--muted); }
+.spot .pnum { font-weight: 800; font-size: 30px; }
+.spot .pstate { font-size: 14.5px; fill: var(--muted); }
 .spot.free .pstate { fill: var(--free); font-weight: 600; }
 .spot.claimed .pstate { fill: var(--claimed); font-weight: 600; }
 .spot.mine .pnum { text-decoration: underline; }
+.spot.linkmine rect { fill: var(--sign); stroke: var(--sign); stroke-opacity: 1; stroke-width: 3; }
+.spot.linkmine text, .spot.linkmine .pstate { fill: var(--sign-ink); }
+.updatebar { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom, 0px)); z-index: 7; background: var(--ink); color: var(--bg); border-radius: 12px; padding: 10px 12px 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.2); }
+@media (min-width: 900px) { .updatebar { left: 50%; right: auto; transform: translateX(-50%); width: 520px; bottom: 96px; } }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
 .legend i { display: inline-block; width: 13px; height: 13px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; border: 2px solid; }
 .lg-free { background: var(--free-soft); border-color: var(--free) !important; }
@@ -222,7 +226,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
     <div class="psign" aria-hidden="true">P</div>
     <div class="brand">
       <h1>Parkeren Jutfasehof</h1>
-      <div class="sub">Peizerdiep · plekken P08 t/m P19</div>
+      <div class="sub">Peizerdiep · parkeerplekken delen</div>
     </div>
     <button class="whoami" id="whoami" hidden data-action="goto" data-tab="mijn">Kies je adres</button>
   </div>
@@ -366,10 +370,14 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
           <div id="spotSetup" class="flat"></div>
         </div>
         <div class="panel" id="phonePanel">
-          <div><div class="eyebrow">Optioneel</div><h2>WhatsApp-nummer</h2></div>
-          <p class="muted small" style="margin:0">Met je nummer kunnen buren je met één tik een WhatsApp sturen, bijvoorbeeld als ze je plek claimen of als je eerder terugkomt. Je nummer is alleen zichtbaar voor bewoners in deze app.</p>
-          <div class="field"><label for="phone">Mobiel nummer</label><input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
-          <div class="row"><button class="btn sm" data-action="savephone">Opslaan</button><button class="btn ghost sm" data-action="delphone" id="delPhone" hidden>Nummer verwijderen</button></div>
+          <div><div class="eyebrow">Optioneel</div><h2>Bereikbaar via WhatsApp</h2></div>
+          <p class="muted small" style="margin:0">Buren kunnen je dan met één tik appen, bijvoorbeeld als ze je plek claimen of als je eerder terugkomt. Woon je met meer mensen, dan vult ieder zijn eigen naam en nummer in. Alleen bewoners in deze app zien dit.</p>
+          <div class="two">
+            <div class="field"><label for="cname">Voornaam</label><input type="text" id="cname" maxlength="30" autocomplete="given-name"></div>
+            <div class="field"><label for="phone">Mobiel nummer</label><input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
+          </div>
+          <div class="row"><button class="btn sm" data-action="savephone">Opslaan</button><button class="btn ghost sm" data-action="delphone" id="delPhone" hidden>Mijn nummer verwijderen</button></div>
+          <div id="housemates" class="flat"></div>
         </div>
       </div>
       <div class="flat">
@@ -395,7 +403,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
       </ol>
       <h3>Hoe het werkt</h3>
       <p style="margin:0">Elke woning kiest bij "Mijn" het eigen huisnummer en de eigen plek. Je geeft je plek eenmalig vrij (bijvoorbeeld een weekend weg) of elke week (bijvoorbeeld werkdagen overdag). Buren kiezen op Overzicht een moment en zien welke plekken dan vrij zijn. Ze claimen er een, zodat er nooit twee auto's voor dezelfde plek komen.</p>
-      <p class="muted small" style="margin:0">Zichtbaar zijn alleen huisnummers. Een WhatsApp-nummer is optioneel. De app stuurt zelf geen berichten: je tikt op de WhatsApp-knop en verstuurt het bericht vanuit je eigen WhatsApp.</p>
+      <p class="muted small" style="margin:0">Zichtbaar zijn huisnummers en, als je die invult, je voornaam en WhatsApp-nummer. Dat is optioneel. De app stuurt zelf geen berichten: je tikt op de WhatsApp-knop en verstuurt het bericht vanuit je eigen WhatsApp.</p>
       <h3>Account</h3>
       <div class="row" style="justify-content:space-between"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
       <p class="muted small" style="margin:0">Tip: zet de app op je beginscherm. iPhone: deelknop, dan "Zet op beginscherm". Android: menu, dan "Toevoegen aan startscherm".</p>
@@ -414,6 +422,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
 <div id="sheetRoot"></div>
 <div class="toast" id="toast" hidden role="status"></div>
 
-<script type="module" src="app.js"></script>
+<div id="updateBar" class="updatebar" hidden role="status"><span>Er is een nieuwe versie van de app.</span><button class="btn sm" data-action="reload">Vernieuwen</button></div>
+<script type="module" src="app.js?v=2"></script>
 </body>
 </html>
