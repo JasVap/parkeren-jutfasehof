@@ -7,7 +7,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, onSnapshot, query, where, addDoc, setDoc, updateDoc, deleteDoc,
-  getDoc, runTransaction, FieldPath, deleteField,
+  getDoc, getDocs, runTransaction, FieldPath, deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import * as cfg from "./config.js";
 const firebaseConfig = cfg.firebaseConfig;
@@ -25,12 +25,14 @@ const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18"
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
 const APP_VERSION = "3";
+const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
   user: null, member: null, house: null, live: false, unsubs: [],
   spots: {}, phones: {}, releases: [], recurring: [], claims: [], requests: [],
   moment: null, tab: "overzicht", onlyCharger: false, momentOpen: false,
   sheet: null, authMode: "login", relTabKey: null,
+  isAdmin: false, ob: null, spotsLoaded: false,
 };
 
 /* ---------- hulpjes ---------- */
@@ -326,6 +328,50 @@ function freeDuring(p, a, b, wins) {
   return claimsIn(w).some(c => c.from < b && c.until > a) ? null : w;
 }
 
+// Is er in deze vrijgave vanaf nu nog tijd over die niemand geclaimd heeft?
+function hasFreeTime(w) {
+  let t = Math.max(w.start, now());
+  for (const c of claimsIn(w)) { if (c.from > t + MIN) return true; t = Math.max(t, c.until); }
+  return t < w.end - MIN;
+}
+
+/* ---------- agenda ---------- */
+// Een afspraak in je eigen agenda als herinnering: via Google Agenda of als .ics-bestand (iPhone, Outlook).
+const calItems = new Map();
+const calIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
+function calBtn(item, cls = "btn ghost sm") { const k = rid(); calItems.set(k, item); return `<button class="${cls}" data-action="calendar" data-k="${k}">${calIcon}Zet in agenda</button>`; }
+const icsDate = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+const icsText = (t) => String(t).replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+function icsFile(it) {
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Parkeren Jutfasehof//NL", "CALSCALE:GREGORIAN", "BEGIN:VEVENT",
+    `UID:${rid()}@parkeren-jutfasehof`, `DTSTAMP:${icsDate(now())}`, `DTSTART:${icsDate(it.start)}`, `DTEND:${icsDate(it.end)}`,
+    `SUMMARY:${icsText(it.title)}`, `DESCRIPTION:${icsText(it.desc + "\n" + APP_URL)}`,
+    "BEGIN:VALARM", `TRIGGER:-PT${it.alarmMin ?? 15}M`, "ACTION:DISPLAY", `DESCRIPTION:${icsText(it.title)}`, "END:VALARM",
+    "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+}
+function googleCalUrl(it) {
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(it.title)}&dates=${icsDate(it.start)}/${icsDate(it.end)}&details=${encodeURIComponent(it.desc + "\n" + APP_URL)}`;
+}
+function calendarSheet(k) {
+  const it = calItems.get(k); if (!it) return;
+  openSheet("Zet in agenda", `<div class="notice"><strong>${esc(it.title)}</strong><span>${esc(range(it.start, it.end))}</span></div>
+    <p class="muted small" style="margin:0">${esc(it.hint || "")} Kies de agenda die je gebruikt:</p>
+    <a class="btn block" href="${esc(googleCalUrl(it))}" target="_blank" rel="noopener">Google Agenda</a>
+    <button class="btn ghost block" data-action="ics" data-k="${k}">iPhone of Outlook agenda</button>
+    <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
+}
+function downloadIcs(k) {
+  const it = calItems.get(k); if (!it) return;
+  const url = URL.createObjectURL(new Blob([icsFile(it)], { type: "text/calendar;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = "parkeren-jutfasehof.ics";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+// Herinnering voor wie een plek van een buur gebruikt: een kwartier voor de eindtijd de auto wegzetten.
+const calForClaim = (c) => ({ title: `Auto wegzetten van ${plekVan(c.spot)}`, start: c.until - 15 * MIN, end: c.until, desc: `Je hebt ${plekVan(c.spot)} geclaimd tot ${when(c.until)}.`, alarmMin: 0, hint: "Je krijgt een kwartier voor de eindtijd een herinnering om je auto weg te zetten." });
+// Voor de eigenaar: de periode dat de plek vrijgegeven is.
+const calForRelease = (spot, a, b) => ({ title: "Parkeerplek vrijgegeven", start: a, end: b, desc: `${mineLabel(spot)} is vrijgegeven in ${APP}. Tot ${when(b)} kan een buur erop staan.`, alarmMin: 30, hint: "Zo zie je in je agenda wanneer je plek vrijgegeven is." });
+
 /* ---------- plattegrond ---------- */
 const GEO = {};
 ["P19","P18","P17","P16","P15"].forEach((p, i) => GEO[p] = { x: 20, y: 160 + i * 80 });
@@ -359,26 +405,30 @@ function renderMap(wins, target = "#map", mode = "status") {
 }
 
 /* ---------- overzicht ---------- */
-function momentOptions() {
-  const n = now(), o = [["Nu", null]];
-  const tonight = at(n, 0, 19); if (tonight > n) o.push(["Vanavond 19:00", tonight]);
-  o.push(["Morgen 09:00", at(n, 1, 9)], ["Morgen 19:00", at(n, 1, 19)]);
-  const dow = new Date(n).getDay();
-  const sat = at(n, ((6 - dow + 7) % 7) || 7, 12); o.push([`${clean(fDay.format(sat))} 12:00`, sat]);
-  return o;
+// Standaard "nu"; tik op het veld voor de draaischijven, "Terug naar nu" zet het terug.
+let momentWheels = null;
+function mountMoment() {
+  const host = $("#momentBar");
+  host.innerHTML = `<div class="momentrow">
+      <button type="button" class="tfbtn momentbtn" id="momentBtn" aria-expanded="false" aria-label="Kies een ander moment"><span></span></button>
+      <button type="button" class="chip" id="momentNow" hidden>Terug naar nu</button>
+    </div>
+    <div class="tfw" id="momentWheels" hidden></div>`;
+  $("#momentBtn").addEventListener("click", () => {
+    const box = $("#momentWheels"), open = box.hidden;
+    box.hidden = !open; $("#momentBtn").setAttribute("aria-expanded", open);
+    if (open) momentWheels = new Wheels(box, { get: () => st.moment ?? ceilQ(now()), set: (v) => { st.moment = v; render(); }, min: () => floorQ(now()) });
+  });
+  $("#momentNow").addEventListener("click", () => {
+    st.moment = null; $("#momentWheels").hidden = true; $("#momentBtn").setAttribute("aria-expanded", "false"); render();
+  });
 }
-let momentTF = null;
 function renderMoment() {
-  const sel = st.moment, opts = momentOptions();
-  const custom = sel != null && !opts.some(([, v]) => v === sel);
-  $("#momentChips").innerHTML = opts.map(([l, v]) => `<button type="button" class="chip" data-action="moment" data-v="${v ?? ""}" aria-pressed="${sel === v}">${esc(l)}</button>`).join("")
-    + `<button type="button" class="chip" data-action="momentcustom" aria-expanded="${st.momentOpen}" aria-pressed="${custom}">${custom ? esc(when(sel)) : "Ander moment"}</button>`;
-  $("#momentPicker").hidden = !st.momentOpen;
-  if (st.momentOpen && !momentTF) {
-    momentTF = timeField($("#momentPicker"), { label: "Kies een moment", get: () => st.moment ?? ceilQ(now()), set: (v) => { st.moment = v; render(); }, min: () => floorQ(now()) });
-    $("#momentPicker .tfbtn").click();
-  } else if (momentTF) momentTF.paint();
-  if (!st.momentOpen && momentTF) { momentTF = null; $("#momentPicker").innerHTML = ""; }
+  const sel = st.moment;
+  $("#momentBtn").querySelector("span").innerHTML = sel == null
+    ? `<span class="d">Nu</span><span class="t">${esc(clean(fDay.format(now())))} ${hm(now())} · tik voor een ander moment</span>`
+    : `<span class="d">${esc(dayWord(sel))} ${hm(sel)}</span><span class="t">${esc(fLong.format(sel))}</span>`;
+  $("#momentNow").hidden = sel == null;
   $("#momentEyebrow").textContent = sel == null ? `Nu · ${clean(fDay.format(now()))} ${hm(now())}` : fLong.format(sel);
   $("#momentTitle").textContent = sel == null ? "Op dit moment" : `${dayWord(sel)} om ${hm(sel)}`;
 }
@@ -583,7 +633,7 @@ function renderMine(wins) {
       <div class="big">${w.start > n ? `Vrij ${esc(range(w.start, w.end))}` : `Vrij tot ${esc(when(w.end))}`}</div>
       <div class="row" style="gap:6px">${my.length > 1 ? `<span class="pill neutral">${esc(mineLabel(w.spot))}</span>` : ""}${w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}
       ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} · ${esc(range(c.from, c.until))}</span>`).join("")}${cs.length ? "" : `<span class="pill free">nog niet geclaimd</span>`}</div>
-      <div class="row"><button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > n ? "Wijzigen of intrekken" : "Eerder terug"}</button></div></div>`;
+      <div class="row"><button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > n ? "Wijzigen of intrekken" : "Eerder terug"}</button>${calBtn(calForRelease(w.spot, w.start, w.end))}</div></div>`;
   }).join("") : `<div class="empty">Je plek staat nu niet vrijgegeven. <button class="btn sm" data-action="releasesheet">Mijn plek vrijgeven</button></div>`;
   if (recs.length) {
     html += `<div class="dayhead">Wekelijks</div>` + recs.map(r => `<div class="card"><div class="head"><span class="pid">${esc(mineLabel(r.spot))}</span><span class="pill neutral">wekelijks</span></div>
@@ -593,7 +643,7 @@ function renderMine(wins) {
   html += `<div class="dayhead">Mijn claims</div>`;
   html += myClaims.length ? myClaims.map(c => `<div class="card is-claimed"><div class="big">Plek van ${esc(spotNr(c.spot))}</div>
     <div class="when">${esc(range(c.from, c.until))}</div>
-    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Intrekken"}</button>${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("") : `<div class="empty">Je hebt geen plek van een buur geclaimd.</div>`;
+    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Intrekken"}</button>${calBtn(calForClaim(c))}${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("") : `<div class="empty">Je hebt geen plek van een buur geclaimd.</div>`;
   $("#mine").innerHTML = html;
 }
 
@@ -604,6 +654,123 @@ function render() {
   renderRequests(wins); renderMine(wins);
   const key = `${st.house}|${st.house ? spotsOf(st.house).join(",") : ""}`;
   if (key !== st.relTabKey) { st.relTabKey = key; mountReleaseForm($("#relTab")); }
+  $("#accountId").textContent = st.user ? st.user.uid : "";
+  if (st.ob && st.ob.step === 1) renderOnboard(); else maybeOnboard();
+  renderAdmin();
+}
+
+/* ---------- rondleiding voor nieuwe buren ---------- */
+// Drie korte stappen na het aanmelden: plek aantikken, laadpaal, WhatsApp. Eén keer, daarna onthouden.
+function maybeOnboard() {
+  if (!st.member || st.member.onboarded || st.ob || !st.house || !st.spotsLoaded) return;
+  if (spotsOf(st.house).length) { markOnboarded(); return; } // bestaande bewoners: niets tonen
+  st.ob = { step: 1 };
+  renderOnboard();
+}
+async function markOnboarded() {
+  st.member.onboarded = true;
+  try { await updateDoc(doc(fs, "members", st.user.uid), { onboarded: true }); } catch (e) { console.warn(e); }
+}
+function renderOnboard() {
+  const ob = st.ob; if (!ob) return;
+  const my = spotsOf(st.house);
+  const dots = `<div class="obsteps" aria-label="Stap ${ob.step} van 3">${[1, 2, 3].map(i => `<i class="${i <= ob.step ? "on" : ""}"></i>`).join("")}</div>`;
+  if (ob.step === 1) {
+    const body = `${dots}<p style="margin:0">Welkom! Tik op de kaart op je eigen parkeerplek.</p>
+      <div class="mapbox" id="obMap"></div>
+      <div class="row"><button class="btn" data-action="obnext" ${my.length ? "" : "disabled"}>Volgende</button>
+      <button class="btn ghost" data-action="obnext">${my.length ? "Overslaan" : "Ik heb geen eigen plek"}</button></div>`;
+    if (!$("#obMap")) openSheet("Welkom bij Parkeren Jutfasehof", body); else sheetBody(body);
+    renderMap(windows(), "#obMap", "link");
+  } else if (ob.step === 2) {
+    sheetBody(`${dots}<p style="margin:0">Heeft je plek een <strong>openbare laadpaal</strong> die buren mogen gebruiken?</p>
+      <div class="row"><button class="btn" data-action="obcharger" data-v="1">Ja</button><button class="btn ghost" data-action="obcharger" data-v="0">Nee</button></div>`);
+  } else {
+    sheetBody(`${dots}<p style="margin:0">Wil je dat buren je kunnen appen, bijvoorbeeld als ze je plek claimen? Dat is optioneel.</p>
+      <div class="two">
+        <div class="field"><label for="obName">Voornaam</label><input type="text" id="obName" maxlength="30" autocomplete="given-name"></div>
+        <div class="field"><label for="obPhone">Mobiel nummer</label><input type="tel" id="obPhone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
+      </div>
+      <div class="err" id="obErr" hidden></div>
+      <div class="row"><button class="btn" data-action="obphone">Opslaan en klaar</button><button class="btn ghost" data-action="obdone">Later</button></div>`);
+  }
+}
+async function obCharger(on) {
+  for (const p of spotsOf(st.house)) await setCharger(p, on);
+  st.ob.step = 3; renderOnboard();
+}
+async function obPhone() {
+  const err = $("#obErr"), name = $("#obName").value.trim().slice(0, 30), v = $("#obPhone").value.trim();
+  if (!name) return showErr(err, "Vul je voornaam in, of tik op Later.");
+  if (!normPhone(v)) return showErr(err, "Dit lijkt geen geldig mobiel nummer. Bijvoorbeeld: 06 12345678.");
+  if (await guard(() => setDoc(doc(fs, "houses", st.house), { contacts: { [st.user.uid]: { name, phone: v, updatedAt: now() } }, updatedAt: now() }, { merge: true }))) obDone();
+}
+function obDone() { st.ob = null; markOnboarded(); closeSheet(); toast("Klaar! Je kunt nu je plek vrijgeven of een plek claimen."); }
+
+/* ---------- beheer (alleen voor beheerders) ---------- */
+// Wie in Firestore onder private/admins staat, mag alle leden zien. Dat proberen we stil; lukt het niet, dan geen beheer.
+async function checkAdmin() {
+  try { const snap = await getDocs(collection(fs, "members")); st.isAdmin = true; st.membersList = snap.docs.map(d => ({ id: d.id, ...d.data() })); }
+  catch { st.isAdmin = false; st.membersList = []; }
+  $("#adminPanel").hidden = !st.isAdmin;
+  if (st.isAdmin) { renderAdmin(); autoCleanup(); }
+}
+function renderAdmin() {
+  if (!st.isAdmin) return;
+  const ms = (st.membersList || []).slice().sort((a, b) => (a.house || "").localeCompare(b.house || "", "nl", { numeric: true }));
+  $("#adminMembers").innerHTML = ms.length ? ms.map(m => `<div class="adminrow"><span><strong>nr ${esc(m.house || "?")}</strong> · ${esc(m.email || "")}</span>
+      ${m.id === st.user.uid ? `<span class="pill neutral">jij</span>` : `<button class="btn danger sm" data-action="admindel" data-id="${m.id}">Toegang intrekken</button>`}</div>`).join("") : `<div class="empty">Nog geen leden.</div>`;
+  const linked = SPOTS.filter(p => ownerOf(p));
+  $("#adminSpots").innerHTML = linked.length ? linked.map(p => `<div class="adminrow"><span>Plek ${esc(spotName(p))}${hasCharger(p) ? " · laadpaal" : ""}</span>
+      <button class="btn ghost sm" data-action="adminunlink" data-spot="${p}">Loskoppelen</button></div>`).join("") : `<div class="empty">Nog geen plekken gekoppeld.</div>`;
+}
+const armed = new Set();
+function confirmTap(key, el, label) {
+  if (armed.has(key)) { armed.delete(key); return true; }
+  armed.add(key); el.textContent = label; setTimeout(() => armed.delete(key), 4000);
+  return false;
+}
+async function adminDelete(id, el) {
+  if (!confirmTap("del" + id, el, "Tik nog eens om te bevestigen")) return;
+  if (await guard(() => deleteDoc(doc(fs, "members", id)))) { toast("Toegang ingetrokken."); checkAdmin(); }
+}
+async function adminUnlink(p, el) {
+  if (!confirmTap("unl" + p, el, "Tik nog eens")) return;
+  if (await guard(() => setDoc(doc(fs, "spots", p), { house: null, charger: false, updatedAt: now() }))) toast("Plek losgekoppeld.");
+}
+async function backup() {
+  const names = ["members", "spots", "houses", "releases", "recurring", "claims", "requests"];
+  const out = { app: APP, exportedAt: new Date().toISOString(), collections: {} };
+  const ok = await guard(async () => {
+    for (const n of names) { const snap = await getDocs(collection(fs, n)); out.collections[n] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()])); }
+  });
+  if (!ok) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a"); a.href = url; a.download = `parkeren-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast("Back-up gedownload.");
+}
+// Ruimt vrijgaven, verzoeken en claims op die langer dan KEEP_DAYS dagen voorbij zijn.
+async function cleanup(silent) {
+  const cut = now() - KEEP_DAYS * D;
+  let n = 0;
+  const ok = await guard(async () => {
+    for (const col of ["releases", "requests"]) {
+      const snap = await getDocs(query(collection(fs, col), where("until", "<", cut)));
+      for (const d of snap.docs) { await deleteDoc(d.ref); n++; }
+    }
+    const cs = await getDocs(collection(fs, "claims"));
+    for (const d of cs.docs) {
+      const old = (d.data().items || []).filter(c => (c.until || 0) < cut && !(c.earlyReturn > cut)).length;
+      if (old) { await mutateClaims(d.id, () => {}); n += old; }
+    }
+  });
+  try { localStorage.setItem("pz_cleanup", String(now())); } catch {}
+  if (ok && !silent) toast(n ? `${n} oude ${n === 1 ? "item" : "items"} opgeruimd.` : "Er was niets op te ruimen.");
+}
+function autoCleanup() {
+  let last = 0; try { last = Number(localStorage.getItem("pz_cleanup")) || 0; } catch {}
+  if (now() - last > 7 * D) cleanup(true);
 }
 
 /* ---------- uitschuifpaneel ---------- */
@@ -616,7 +783,10 @@ function openSheet(title, body) {
   document.body.style.overflow = "hidden";
 }
 function sheetBody(html) { const b = $("#sheetBody"); if (b) b.innerHTML = html; }
-function closeSheet() { st.sheet = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = ""; }
+function closeSheet() {
+  if (st.ob) { st.ob = null; markOnboarded(); }
+  st.sheet = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = "";
+}
 
 function spotSheet(p) {
   const wins = windows(), t = T(), s = statusAt(p, t, wins), own = ownerOf(p);
@@ -625,15 +795,14 @@ function spotSheet(p) {
   const mine = st.house && own === st.house;
   openSheet(own ? `Plek van nr ${spotName(p)}` : "Plek zonder adres", `<div class="row"><span class="muted">${own ? `${STREET} ${esc(own)}` : "Nog niet aan een woning gekoppeld"}</span>${head}${hasCharger(p) ? boltPill : ""}</div>
     ${!own && st.house ? `<button class="btn block" data-action="linkspot" data-spot="${p}">Dit is mijn plek</button>` : ""}
-    ${s.cls === "free" && !mine && st.house ? `<button class="btn green block" data-action="claimsheet" data-key="${s.w.key}">Claim deze plek</button>` : ""}
     ${mine ? `<button class="btn block" data-action="releasesheet" data-spot="${p}">${clockIcon}Plek vrijgeven</button>` : ""}
-    <div class="dayhead">Gepland vrij</div>
+    <div class="dayhead">Wanneer vrij</div>
     ${up.length ? `<div class="list">${up.map(w => { const cs = claimsIn(w);
       return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="when">${esc(range(w.start, w.end))}</div>
       ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} ${esc(range(c.from, c.until))}</span>`).join(" ")}
       ${w.note ? `<div class="note">${esc(w.note)}</div>` : ""}
       ${mine ? `<button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > now() ? "Wijzigen of intrekken" : "Eerder terug"}</button>` : ""}
-      ${!mine && st.house ? `<button class="btn green sm" data-action="claimsheet" data-key="${w.key}">Claim in deze periode</button>` : ""}</div>`; }).join("")}</div>`
+      ${!mine && st.house && hasFreeTime(w) ? `<button class="btn green sm" data-action="claimsheet" data-key="${w.key}">Claim</button>` : ""}</div>`; }).join("")}</div>`
       : `<div class="empty">Geen vrijgaven gepland.</div>`}`);
 }
 let claimRange = null;
@@ -735,6 +904,7 @@ function useLegacy() {
 function linkTap(p) {
   const o = ownerOf(p);
   if (!o) { linkSpot(p); return; }
+  if (o === st.house && st.ob) { linkSpot(p); return; } // tijdens de rondleiding gewoon loskoppelen, zonder extra paneel
   if (o === st.house) {
     openSheet("Plek loskoppelen?", `<p style="margin:0">Deze plek hoort nu bij nr ${esc(st.house)}. Wil je hem loskoppelen?</p>
       <button class="btn danger block" data-action="unlinkspot" data-spot="${p}">Loskoppelen</button>
@@ -766,7 +936,7 @@ async function submitRelease({ spots, mode, range: r, days, ft, ut, note }, fail
     if (until - from > 31 * D) return fail("Geef je plek voor maximaal een maand tegelijk vrij.");
     let res = null;
     const ok = await guard(async () => { for (const p of spots) res = await upsertRelease(p, from, until, note); });
-    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${res.merged ? "nu " : ""}vrij ${range(res.f, res.u)}`, `vrij ${range(res.f, res.u)}`, res.merged);
+    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${res.merged ? "nu " : ""}vrij ${range(res.f, res.u)}`, `vrij ${range(res.f, res.u)}`, res.merged, calForRelease(spots[0], res.f, res.u));
   } else {
     if (!days.length) return fail("Kies minstens één dag.");
     if (!ft || !ut || ft === ut) return fail("Vul een begin- en eindtijd in die verschillen.");
@@ -775,12 +945,13 @@ async function submitRelease({ spots, mode, range: r, days, ft, ut, note }, fail
     if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, dd);
   }
 }
-function afterRelease(txt, shareTxt, merged) {
+function afterRelease(txt, shareTxt, merged, cal) {
   st.relTabKey = null;
   setTab("overzicht");
   openSheet("Vrijgegeven", `<div class="notice green"><span>${esc(txt)}.${merged ? " Samengevoegd met je eerdere vrijgave." : ""}</span></div>
     <p class="muted" style="margin:0">Wil je het de buren laten weten?</p>
     <a class="btn wa block" href="${esc(waShare(`Hoi buren! De parkeerplek van ${STREET} ${st.house} is ${shareTxt}. Claimen kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
+    ${cal ? calBtn(cal, "btn ghost block") : ""}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
   render();
 }
@@ -802,6 +973,7 @@ async function claim(key) {
   const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
   const btns = waBtns(w.house, msg);
   sheetBody(`<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
+    ${calBtn(calForClaim({ spot: w.spot, until: u }), "btn ghost block")}
     ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : `<p class="muted" style="margin:0">Nr ${esc(w.house)} heeft geen WhatsApp-nummer ingevuld, maar ziet je claim in de app.</p>`}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
@@ -879,6 +1051,7 @@ function setTab(t) {
   document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === t));
   try { history.replaceState(null, "", "#" + t); } catch {}
   window.scrollTo({ top: 0 });
+  if (t === "info" && st.member) checkAdmin();
 }
 
 /* ---------- inloggen en lid worden ---------- */
@@ -966,8 +1139,10 @@ async function enterApp() {
   showScreen("app");
   setTab((location.hash || "").slice(1) || "overzicht");
   if (!reqRange) reqRange = rangeField($("#reqRange"), { from: at(now(), 1, 18), until: at(now(), 1, 23), quick: true, durLabel: "Duur" });
+  if (!$("#momentBtn")) mountMoment();
   subscribe();
   render();
+  checkAdmin();
 }
 function subscribe() {
   if (st.live) return;
@@ -976,7 +1151,7 @@ function subscribe() {
   const arr = (k) => (s) => { st[k] = s.docs.map(d => ({ id: d.id, ...d.data() })); render(); };
   const map = (k) => (s) => { const m = {}; s.docs.forEach(d => m[d.id] = d.data()); st[k] = m; render(); };
   st.unsubs = [
-    onSnapshot(collection(fs, "spots"), map("spots"), err),
+    onSnapshot(collection(fs, "spots"), (s) => { st.spotsLoaded = true; map("spots")(s); }, err),
     onSnapshot(collection(fs, "houses"), map("phones"), err),
     onSnapshot(query(collection(fs, "releases"), where("until", ">", cut)), arr("releases"), err),
     onSnapshot(collection(fs, "recurring"), arr("recurring"), err),
@@ -1018,8 +1193,7 @@ document.addEventListener("click", (e) => {
   if (el.tagName === "A") e.preventDefault();
   switch (a) {
     case "goto": closeSheet(); setTab(d.tab); break;
-    case "moment": st.moment = d.v ? Number(d.v) : null; st.momentOpen = false; render(); break;
-    case "momentcustom": st.momentOpen = !st.momentOpen; render(); break;
+    case "moment": st.moment = d.v ? Number(d.v) : null; render(); break;
     case "spot": spotSheet(d.spot); break;
     case "claimsheet": claimSheet(d.key); break;
     case "claim": claim(d.key); break;
@@ -1047,6 +1221,17 @@ document.addEventListener("click", (e) => {
     case "forgot": forgot(); break;
     case "logout": closeSheet(); signOut(auth); break;
     case "reload": location.reload(); break;
+    case "calendar": calendarSheet(d.k); break;
+    case "obnext": st.ob.step = spotsOf(st.house).length ? 2 : 3; renderOnboard(); break;
+    case "obcharger": obCharger(d.v === "1"); break;
+    case "obphone": obPhone(); break;
+    case "obdone": obDone(); break;
+    case "admindel": adminDelete(d.id, el); break;
+    case "adminunlink": adminUnlink(d.spot, el); break;
+    case "backup": backup(); break;
+    case "cleanup": cleanup(false); break;
+    case "copyid": navigator.clipboard?.writeText(st.user.uid).then(() => toast("Account-ID gekopieerd."), () => toast("Kopiëren lukte niet. Houd de tekst ingedrukt om te kopiëren.")); break;
+    case "ics": downloadIcs(d.k); break;
   }
 });
 document.addEventListener("keydown", (e) => {

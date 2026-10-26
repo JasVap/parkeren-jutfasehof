@@ -189,7 +189,15 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .optcard .sub { font-size: 14.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .notice.reqcard { display: flex; gap: 10px; align-items: center; }
 .notice.reqcard > div { flex: 1; min-width: 0; }
-#momentPicker { display: grid; gap: 8px; }
+.momentrow { display: flex; gap: 8px; align-items: stretch; }
+.momentrow .momentbtn { flex: 1; min-width: 0; }
+.momentrow .chip { min-height: 54px; border-radius: 10px; }
+.obsteps { display: flex; gap: 6px; }
+.obsteps i { width: 28px; height: 5px; border-radius: 3px; background: var(--line); }
+.obsteps i.on { background: var(--sign); }
+.adminrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.adminrow:last-child { border-bottom: 0; }
+.mono-id { font-family: var(--mono); font-size: 13px; word-break: break-all; color: var(--muted); }
 /* instellingen */
 .set { border-bottom: 1px solid var(--line); }
 .set:last-of-type { border-bottom: 0; }
@@ -315,8 +323,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
   <section data-tab="overzicht">
     <div class="notices" id="notices"></div>
     <div class="momentbar">
-      <div class="scroller" id="momentChips" role="group" aria-label="Kies moment"></div>
-      <div id="momentPicker" hidden></div>
+      <div id="momentBar" class="flat"></div>
     </div>
     <div class="grid2">
       <div class="panel">
@@ -424,6 +431,17 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
       <h3>Account</h3>
       <div class="row" style="justify-content:space-between"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
       <p class="muted small" style="margin:0">Tip: zet de app op je beginscherm. iPhone: deelknop, dan "Zet op beginscherm". Android: menu, dan "Toevoegen aan startscherm".</p>
+      <details><summary>Account-ID (voor de beheerder)</summary><div class="row" style="margin-top:6px"><span class="mono-id" id="accountId"></span><button class="btn ghost sm" data-action="copyid">Kopieer</button></div></details>
+    </div>
+    <div class="panel" id="adminPanel" style="max-width:680px;width:100%;justify-self:center" hidden>
+      <div><div class="eyebrow">Alleen voor beheerders</div><h2>Beheer</h2></div>
+      <div class="row"><button class="btn sm" data-action="backup">Back-up downloaden</button><button class="btn ghost sm" data-action="cleanup">Oude gegevens opruimen</button></div>
+      <p class="muted small" style="margin:0">Opruimen verwijdert vrijgaven, claims en verzoeken die langer dan 30 dagen voorbij zijn. Dat gebeurt ook vanzelf, één keer per week, als jij de app opent. Download eerst een back-up als je het zeker wilt weten.</p>
+      <h3>Leden</h3>
+      <div id="adminMembers"></div>
+      <p class="muted small" style="margin:0">Toegang intrekken verwijdert het lidmaatschap. Het account zelf verwijder je in Firebase onder Authentication.</p>
+      <h3>Gekoppelde plekken</h3>
+      <div id="adminSpots"></div>
     </div>
   </section>
 </main>
