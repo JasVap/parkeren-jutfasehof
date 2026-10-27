@@ -25,7 +25,7 @@ const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
-const APP_VERSION = "7.1";
+const APP_VERSION = "7.2";
 const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
@@ -363,9 +363,11 @@ function statusAt(p, t, wins) {
   const freeUntil = next ? next.from : w.end;
   return { cls: "free", text: `tot ${shortWhen(freeUntil)}`, w, freeUntil };
 }
+// Dekt vrijgave w de periode [a, b)? Wat al voorbij is telt niet mee: een vrijgave die om 17:38 begon, dekt een verzoek "nu tot 23:00" ook als dat formeel om 17:30 begint.
+function covers(w, a, b) { return w.start <= Math.max(a, now()) && w.end >= b; }
 // Is plek p vrij en ongeclaimd gedurende de hele periode [a, b)?
 function freeDuring(p, a, b, wins) {
-  const w = wins.find(w => w.spot === p && w.start <= a && w.end >= b);
+  const w = wins.find(w => w.spot === p && covers(w, a, b));
   if (!w) return null;
   return claimsIn(w).some(c => c.from < b && c.until > a) ? null : w;
 }
@@ -1282,7 +1284,7 @@ function claimDoneHtml(w, f, u, reqId) {
 // "Claim voor deze periode": in één keer precies de gevraagde tijd claimen.
 async function claimFit(key, a, b, reqId) {
   const w = windows().find(x => x.key === key);
-  const f = Math.max(a, floorQ(now()));
+  const f = w ? Math.max(a, floorQ(now()), w.start) : 0;
   if (!w || !(b > f)) { toast("Deze plek is niet meer vrij."); render(); return; }
   try { await doClaim(w, f, b); }
   catch (e) { console.warn(e); toast(e instanceof UserError ? e.message : "Claimen lukte niet. Controleer je verbinding en probeer het opnieuw."); return; }
@@ -1453,11 +1455,13 @@ async function postRequest(from, until, note) {
 }
 async function offer(id, p) {
   const r = st.requests.find(x => x.id === id); if (!r) return;
-  const from = Math.max(r.from, floorQ(now())), until = r.until;
-  const wins = windows();
+  let from = Math.max(r.from, floorQ(now()));
+  const until = r.until, wins = windows();
   const ok = await guard(async () => {
     // Staat de plek al vrij in die periode, dan alleen de claim; anders eerst vrijgeven (samengevoegd met wat er al is).
-    if (!wins.some(w => w.spot === p && w.start <= from && w.end >= until)) { await upsertRelease(p, from, until, `Voor nr ${r.house}`); bumpStats({ r: 1 }); }
+    const cw = wins.find(w => w.spot === p && covers(w, from, until));
+    if (cw) from = Math.max(from, cw.start);
+    else { await upsertRelease(p, from, until, `Voor nr ${r.house}`); bumpStats({ r: 1 }); }
     await mutateClaims(p, (items) => {
       const clash = items.find(c => c.house && c.until > c.from && c.from < until && c.until > from);
       if (clash) throw new UserError(`Nr ${clash.house} heeft je plek in die periode al geclaimd.`);
