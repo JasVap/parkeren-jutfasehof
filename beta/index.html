@@ -190,6 +190,16 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .optcard .sub { font-size: 14.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .notice.reqcard { display: flex; gap: 10px; align-items: center; }
 .notice.reqcard > div { flex: 1; min-width: 0; }
+.adresnote { display: grid; gap: 8px; justify-items: start; }
+.adresnote .btn, .smallwa .btn { min-height: 40px; font-size: 14px; padding: 0 12px; }
+.segrow { display: flex; align-items: center; gap: 10px; }
+.segrow > div { flex: 1; display: grid; gap: 1px; min-width: 0; }
+.segrow strong { font-family: var(--display); font-size: 15.5px; }
+.segrow span { font-size: 14px; color: var(--muted); }
+.dot { width: 10px; height: 10px; border-radius: 999px; flex: none; }
+.dot.free { background: var(--free); }
+.dot.claimed { background: var(--claimed); }
+.card.seg { display: grid; gap: 10px; }
 .buurtA { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 10px; background: var(--free-soft); color: var(--free); font-size: 14.5px; line-height: 1.35; }
 .buurtA svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
 .buurtA strong { font-weight: 700; }
@@ -432,7 +442,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
           </div></details>
         <div class="set static" id="setMates" hidden><summary><span class="lab" id="labMates">Ook op dit adres</span><span class="val" id="valMates"></span></summary></div>
       </div>
-      <p class="muted small setnote">Verhuisd of verkeerd adres? Vraag de beheerder het aan te passen.</p>
+      <div class="muted small setnote adresnote" id="adresNote">Verhuisd of verkeerd adres? Vraag de beheerder het aan te passen.</div>
 
       <div class="eyebrow">Hulp</div>
       <div class="panel setgroup">
@@ -465,6 +475,8 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
               <div id="adminMembers"></div>
               <p class="muted small" style="margin:0">Kies een ander nummer om iemands adres aan te passen. Toegang intrekken verwijdert het lidmaatschap. Het account zelf verwijder je in Firebase onder Authentication.</p>
             </div></details>
+          <details class="set"><summary><span class="lab">Beheerder tonen aan buren</span></summary>
+            <div class="setbody" id="adminShow"></div></details>
           <details class="set"><summary><span class="lab">Plekken loskoppelen</span></summary>
             <div class="setbody" id="adminSpots"></div></details>
           <details class="set"><summary><span class="lab">Back-up en opruimen</span></summary>
@@ -479,6 +491,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
       <div class="eyebrow">Account</div>
       <div class="panel setgroup">
         <div class="setrow"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
+        <div class="setrow" id="beheerRow" hidden><span class="small"><span class="muted">Vragen? De beheerder is</span><br><strong id="beheerName"></strong></span><span id="beheerBtn" class="smallwa"></span></div>
         <details class="set"><summary><span class="lab">Account-ID (voor de beheerder)</span></summary>
           <div class="setbody"><div class="row"><span class="mono-id" id="accountId"></span><button class="btn ghost sm" data-action="copyid">Kopieer</button></div></div></details>
         <details class="set" id="setPw"><summary><span class="lab">Wachtwoord wijzigen</span></summary>
@@ -511,6 +524,6 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
 <div class="toast" id="toast" hidden role="status"></div>
 
 <div id="updateBar" class="updatebar" hidden role="status"><span>Er is een nieuwe versie van de app.</span><button class="btn sm" data-action="reload">Vernieuwen</button></div>
-<script type="module" src="app.js?v=7"></script>
+<script type="module" src="app.js?v=7.1"></script>
 </body>
 </html>
