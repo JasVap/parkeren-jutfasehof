@@ -201,23 +201,6 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .momentbtn .t { font-size: 13.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .momentnow { flex: none; border: 0; border-radius: 9px; min-height: 44px; padding: 0 12px; background: color-mix(in srgb, var(--sign) 20%, transparent); color: var(--ink); font-family: var(--display); font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .momentnow svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.viewswitch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
-.viewswitch button { border: 0; border-radius: 9px; min-height: 42px; background: transparent; color: var(--muted); font-family: var(--display); font-weight: 600; font-size: 15px; cursor: pointer; }
-.viewswitch button[aria-pressed="true"] { background: var(--sign); color: var(--sign-ink); }
-.wk { display: grid; gap: 0; position: relative; }
-.wk-row { display: flex; gap: 6px; align-items: center; min-height: 38px; }
-.wk-lab { width: 40px; flex: none; font-family: var(--display); font-weight: 800; font-size: 15px; }
-.wk-lab.me { text-decoration: underline; }
-.wk-track { flex: 1; position: relative; height: 24px; min-width: 0; }
-.wk-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); font-family: var(--display); font-size: 12px; font-weight: 600; color: var(--muted); text-align: center; }
-.wk-days .today { color: var(--sign); }
-.wk-grid { position: absolute; top: 0; bottom: 0; left: 46px; right: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); pointer-events: none; }
-.wk-grid span { border-left: 1px solid var(--line); opacity: .6; }
-.wk-bar { position: absolute; top: 0; bottom: 0; border-radius: 5px; border: 0; padding: 0; }
-.wk-bar.free { background: var(--free); cursor: pointer; }
-.wk-bar.claimed { background: var(--claimed); }
-.wk-now { position: absolute; top: -4px; bottom: 0; width: 2px; background: var(--sign); pointer-events: none; }
-.wk-nowkey { display: inline-block; width: 2px; height: 13px; background: var(--sign); vertical-align: -2px; margin-right: 6px; }
 .setwrap { display: grid; gap: 10px; max-width: 680px; width: 100%; justify-self: center; }
 .setwrap > .eyebrow, #adminPanel > .eyebrow { margin-top: 8px; }
 .setgroup { padding: 0 14px; gap: 0; }
@@ -361,10 +344,6 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
   <!-- KAART -->
   <section data-tab="kaart">
     <div class="notices" id="urgent"></div>
-    <div class="viewswitch" role="group" aria-label="Weergave">
-      <button type="button" data-action="view" data-v="kaart" aria-pressed="true">Kaart</button>
-      <button type="button" data-action="view" data-v="week" aria-pressed="false">Week</button>
-    </div>
     <div id="kaartView" class="flat">
       <div class="momentbar"><div id="momentBar" class="flat"></div></div>
       <div class="grid2">
@@ -395,20 +374,6 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
             <div class="list" id="options"></div>
           </div>
         </div>
-      </div>
-    </div>
-    <div id="weekView" hidden>
-      <div class="panel" style="max-width:680px;width:100%;justify-self:center">
-        <div class="row" style="justify-content:space-between;align-items:baseline">
-          <h2>Wanneer is er plek?</h2><span class="muted small" id="weekRange"></span>
-        </div>
-        <div id="week"></div>
-        <div class="legend">
-          <span><i class="lg-free"></i>Vrij</span>
-          <span><i class="lg-claimed"></i>Geclaimd</span>
-          <span><span class="wk-nowkey" aria-hidden="true"></span>Nu</span>
-        </div>
-        <p class="muted small" style="margin:0">Tik op een groen blok om dat moment op de kaart te zien en te claimen.</p>
       </div>
     </div>
   </section>
@@ -456,7 +421,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
       <div class="panel setgroup">
         <details class="set"><summary><span class="lab">Zo werkt het en de afspraken</span></summary>
           <div class="setbody">
-            <p style="margin:0">Je geeft je plek vrij als je weg bent, eenmalig of elke week. Buren kiezen op de kaart een moment, of bekijken de week, en claimen een vrije plek. Zo komen er nooit twee auto's voor dezelfde plek. Zoek je zelf een plek, vraag er dan om: buren zien je verzoek bij Activiteit.</p>
+            <p style="margin:0">Je geeft je plek vrij als je weg bent, eenmalig of elke week. Buren kiezen op de kaart een moment en claimen een vrije plek. Zo komen er nooit twee auto's voor dezelfde plek. Zoek je zelf een plek, vraag er dan om: buren zien je verzoek bij Activiteit.</p>
             <ol class="rules">
               <li>Parkeer alleen op een plek die vrijgegeven is en die je zelf geclaimd hebt.</li>
               <li>Eerder weg dan gepland? Tik op "Ik ben weg", dan is de plek weer vrij.</li>
@@ -513,6 +478,6 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
 <div class="toast" id="toast" hidden role="status"></div>
 
 <div id="updateBar" class="updatebar" hidden role="status"><span>Er is een nieuwe versie van de app.</span><button class="btn sm" data-action="reload">Vernieuwen</button></div>
-<script type="module" src="app.js?v=5"></script>
+<script type="module" src="app.js?v=6"></script>
 </body>
 </html>

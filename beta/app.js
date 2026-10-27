@@ -24,13 +24,13 @@ const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
-const APP_VERSION = "5";
+const APP_VERSION = "6";
 const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
   user: null, member: null, house: null, live: false, unsubs: [],
   spots: {}, phones: {}, releases: [], recurring: [], claims: [], requests: [],
-  moment: null, tab: "kaart", view: "kaart", onlyCharger: false, momentOpen: false,
+  moment: null, tab: "kaart", onlyCharger: false, momentOpen: false,
   sheet: null, authMode: "login",
   isAdmin: false, ob: null, spotsLoaded: false,
 };
@@ -537,49 +537,6 @@ function renderBanner() {
   $("#whoami").textContent = st.house ? `nr ${st.house}` : "";
 }
 
-/* ---------- weekoverzicht ---------- */
-function renderWeek(wins) {
-  if (st.view !== "week") return;
-  const n = now(), start = sod(n), end = at(start, 7, 0), span = end - start;
-  const pct = (t) => ((Math.min(Math.max(t, start), end) - start) / span * 100).toFixed(2);
-  const spots = SPOTS.filter(p => ownerOf(p)).sort((a, b) => (spotName(a) || "").localeCompare(spotName(b) || "", "nl", { numeric: true }));
-  $("#weekRange").textContent = `${clean(fDate.format(start))} tot ${clean(fDate.format(end - 1))}`;
-  if (!spots.length) { $("#week").innerHTML = `<div class="empty">Er zijn nog geen plekken gekoppeld.</div>`; return; }
-  const days = [...Array(7)].map((_, i) => at(start, i, 12));
-  const rows = spots.map(p => {
-    let bars = "";
-    for (const w of wins) {
-      if (w.spot !== p || w.end <= n || w.start >= end) continue;
-      let t = Math.max(w.start, n);
-      const seg = (a, b, cls, c) => {
-        if (b <= a) return;
-        const l = pct(a), wd = Math.max(1.2, pct(b) - l).toFixed(2);
-        bars += cls === "free"
-          ? `<button type="button" class="wk-bar free" style="left:${l}%;width:${wd}%" data-action="weekpick" data-v="${a}" aria-label="${esc(spotNr(p))} vrij ${esc(range(a, b))}"></button>`
-          : `<span class="wk-bar claimed" style="left:${l}%;width:${wd}%" title="nr ${esc(c.house)}"></span>`;
-      };
-      for (const c of claimsIn(w)) {
-        if (c.until <= t) continue;
-        seg(t, Math.min(c.from, w.end), "free");
-        seg(Math.max(c.from, t), Math.min(c.until, w.end), "claimed", c);
-        t = Math.max(t, c.until);
-      }
-      seg(t, w.end, "free");
-    }
-    return `<div class="wk-row"><span class="wk-lab ${ownerOf(p) === st.house ? "me" : ""}">${esc(spotName(p))}</span><div class="wk-track">${bars}</div></div>`;
-  }).join("");
-  $("#week").innerHTML = `<div class="wk-row" style="min-height:24px"><span class="wk-lab"></span><div class="wk-days" style="flex:1">${days.map((d, i) => `<span class="${i === 0 ? "today" : ""}">${DOW[new Date(d).getDay()]}</span>`).join("")}</div></div>
-    <div class="wk"><div class="wk-grid">${days.map(() => "<span></span>").join("")}</div>${rows}
-    <div class="wk-now" style="left:calc(46px + (100% - 46px) * ${pct(n) / 100})"></div></div>`;
-}
-function setView(v) {
-  st.view = v === "week" ? "week" : "kaart";
-  document.querySelectorAll(".viewswitch button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === st.view));
-  $("#kaartView").hidden = st.view !== "kaart";
-  $("#weekView").hidden = st.view !== "week";
-  render();
-}
-
 /* ---------- vrijgeven (formulier, in het tabblad en in een paneel) ---------- */
 function mountReleaseForm(host, opts = {}) {
   const my = st.house ? spotsOf(st.house) : [];
@@ -740,7 +697,7 @@ function renderMine(wins) {
 function render() {
   if (!st.member) return;
   const wins = windows();
-  renderBanner(); renderNotices(wins); renderMoment(); renderMap(wins); renderOptions(wins); renderWeek(wins);
+  renderBanner(); renderNotices(wins); renderMoment(); renderMap(wins); renderOptions(wins);
   renderMine(wins);
   $("#accountId").textContent = st.user ? st.user.uid : "";
   if (st.ob && ["spot", "housemate"].includes(st.ob.steps[st.ob.i])) renderOnboard(); else maybeOnboard();
@@ -758,7 +715,9 @@ function maybeOnboard() {
   const hasSpot = spotsOf(st.house).length > 0;
   const needWa = !st.member.waAsked && !myContact();
   let steps;
-  if (!st.member.onboarded) steps = hasSpot ? ["housemate", "wa"] : ["spot", "charger", "wa"];
+  // Wie al langer lid is (van voor de rondleiding) en een plek heeft, krijgt geen welkom als huisgenoot.
+  const fresh = (st.member.createdAt || 0) > now() - 2 * D;
+  if (!st.member.onboarded) steps = !hasSpot ? ["spot", "charger", "wa"] : fresh ? ["housemate", "wa"] : ["wa"];
   else if (needWa) steps = ["wa"];
   else return;
   if (!needWa) steps = steps.filter(x => x !== "wa");
@@ -1335,8 +1294,6 @@ document.addEventListener("click", (e) => {
   switch (a) {
     case "goto": closeSheet(); setTab(d.tab); break;
     case "moment": setMoment(d.v ? Number(d.v) : null); break;
-    case "view": setView(d.v); break;
-    case "weekpick": st.view = "kaart"; setView("kaart"); setMoment(Number(d.v)); window.scrollTo({ top: 0 }); break;
     case "spot": spotSheet(d.spot); break;
     case "claimsheet": claimSheet(d.key); break;
     case "claim": claim(d.key); break;
