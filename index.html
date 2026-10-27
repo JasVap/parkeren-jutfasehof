@@ -71,12 +71,13 @@ header.top { background: var(--sign); color: var(--sign-ink); position: sticky; 
 .brand { min-width: 0; flex: 1; }
 .brand h1 { font-family: var(--display); font-weight: 800; font-size: 18px; margin: 0; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand .sub { font-size: 12.5px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.whoami { flex: none; font-family: var(--display); font-weight: 600; font-size: 14px; background: color-mix(in srgb, var(--sign-ink) 16%, transparent); border: 0; color: inherit; border-radius: 999px; padding: 8px 12px; cursor: pointer; min-height: 36px; }
+.whoami { flex: none; font-family: var(--display); font-weight: 600; font-size: 14px; opacity: .85; padding: 0 2px; }
+.whoami:empty { display: none; }
 :focus-visible { outline: 3px solid color-mix(in srgb, var(--sign) 60%, transparent); outline-offset: 2px; }
 
 /* navigatie onderin */
 nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--line);
-  display: grid; grid-template-columns: repeat(5, 1fr); padding-bottom: env(safe-area-inset-bottom, 0px);
+  display: grid; grid-template-columns: repeat(3, 1fr); padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 nav.tabs button { background: none; border: 0; height: var(--nav-h); display: grid; place-items: center; align-content: center; gap: 2px; color: var(--muted); font-family: var(--display); font-size: 12px; font-weight: 600; cursor: pointer; position: relative; }
 nav.tabs button svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -159,6 +160,76 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .spot.mine .pnum { text-decoration: underline; }
 .spot.linkmine rect { fill: var(--sign); stroke: var(--sign); stroke-opacity: 1; stroke-width: 3; }
 .spot.linkmine text, .spot.linkmine .pstate { fill: var(--sign-ink); }
+/* een rij die opzij scrolt mag zijn ouder nooit breder maken */
+.scroller { contain: inline-size; }
+.flat > *, .tfw > *, .sheet > *, form > * { min-width: 0; }
+/* draaischijven en tijdvelden */
+.range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tfbtn { text-align: left; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); border-radius: 10px; min-height: 54px; padding: 6px 12px; cursor: pointer; width: 100%; display: block; }
+.tfbtn > span { display: flex; flex-direction: column; }
+.tfbtn[aria-expanded="true"] { border: 2px solid var(--sign); padding: 5px 11px; }
+.tfbtn .d { font-family: var(--display); font-weight: 800; font-size: 16.5px; line-height: 1.2; }
+.tfbtn .t { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tfw { display: grid; gap: 8px; }
+.wheels { position: relative; display: grid; grid-template-columns: 2fr 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 8px; height: 210px; overflow: hidden; }
+.wheels .band { position: absolute; left: 8px; right: 8px; top: 84px; height: 42px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); pointer-events: none; }
+.wheel { position: relative; height: 210px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; padding: 84px 0; box-sizing: border-box; overscroll-behavior: contain; -webkit-mask-image: linear-gradient(transparent, #000 32%, #000 68%, transparent); mask-image: linear-gradient(transparent, #000 32%, #000 68%, transparent); outline: none; }
+.wheel::-webkit-scrollbar { display: none; }
+.wheel:focus-visible { box-shadow: inset 0 0 0 2px var(--sign); border-radius: 9px; }
+.wheel > div { height: 42px; line-height: 42px; text-align: center; scroll-snap-align: center; font-family: var(--display); font-size: 17px; color: var(--muted); cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wheel > div.on { color: var(--ink); font-weight: 800; font-size: 19px; }
+.wheel > div.off { opacity: .3; }
+.dur { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); }
+.dur:empty { display: none; }
+.dur svg { color: var(--free); flex: none; }
+.quick .chip .tag { opacity: .7; }
+/* overzicht */
+.card.optcard { display: flex; align-items: center; gap: 10px; }
+.optmain { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.big { font-family: var(--display); font-weight: 800; font-size: 17px; line-height: 1.25; }
+.optcard .sub { font-size: 14.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.notice.reqcard { display: flex; gap: 10px; align-items: center; }
+.notice.reqcard > div { flex: 1; min-width: 0; }
+.momentrow { display: flex; gap: 8px; align-items: center; border: 2px solid var(--sign); background: var(--surface); border-radius: 12px; padding: 4px 4px 4px 12px; min-height: 60px; }
+.momentrow.other { background: color-mix(in srgb, var(--sign) 13%, var(--surface)); }
+.momentbtn { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; gap: 12px; text-align: left; min-height: 52px; padding: 0; cursor: pointer; font: inherit; }
+.momentbtn > svg { width: 22px; height: 22px; flex: none; stroke: var(--sign); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.momentbtn > svg.chev { width: 18px; height: 18px; stroke: var(--muted); margin-right: 8px; transition: transform .15s; }
+.momentbtn[aria-expanded="true"] > svg.chev { transform: rotate(90deg); }
+.momentbtn .mtxt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.momentbtn .d { font-family: var(--display); font-weight: 800; font-size: 18px; line-height: 1.2; }
+.momentbtn .t { font-size: 13.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.momentnow { flex: none; border: 0; border-radius: 9px; min-height: 44px; padding: 0 12px; background: color-mix(in srgb, var(--sign) 20%, transparent); color: var(--ink); font-family: var(--display); font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.momentnow svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.setwrap { display: grid; gap: 10px; max-width: 680px; width: 100%; justify-self: center; }
+.setwrap > .eyebrow, #adminPanel > .eyebrow { margin-top: 8px; }
+.setgroup { padding: 0 14px; gap: 0; }
+.setnote { margin: 0 2px; }
+.setrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 56px; border-bottom: 1px solid var(--line); }
+.set .lock { width: 16px; height: 16px; flex: none; stroke: var(--muted); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.set.static:last-child, .setgroup > .set:last-child { border-bottom: 0; }
+.obsteps { display: flex; gap: 6px; }
+.obsteps i { width: 28px; height: 5px; border-radius: 3px; background: var(--line); }
+.obsteps i.on { background: var(--sign); }
+.adminrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.adminrow:last-child { border-bottom: 0; }
+.mono-id { font-family: var(--mono); font-size: 13px; word-break: break-all; color: var(--muted); }
+/* instellingen */
+.set { border-bottom: 1px solid var(--line); }
+
+.set > summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 52px; cursor: pointer; color: var(--ink); font-family: var(--body); font-weight: 400; font-size: 16px; }
+.set > summary::-webkit-details-marker { display: none; }
+.set > summary .lab { flex: 1; }
+.set > summary .val { color: var(--muted); font-size: 15px; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set > summary::after { content: "›"; color: var(--muted); font-size: 20px; transition: transform .15s; }
+.set[open] > summary::after { transform: rotate(90deg); }
+.set.static > summary { cursor: default; }
+.set.static > summary::after { content: none; }
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.actions.one { grid-template-columns: 1fr; }
+.actions .btn { min-width: 0; min-height: 50px; padding: 0 6px; font-size: 15px; line-height: 1.15; }
+.housesel { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; min-height: 36px; padding: 0 8px; font: inherit; font-weight: 600; margin-right: 6px; }
+.set .setbody { display: grid; gap: 12px; padding: 4px 0 16px; }
 .updatebar { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom, 0px)); z-index: 7; background: var(--ink); color: var(--bg); border-radius: 12px; padding: 10px 12px 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.2); }
 @media (min-width: 900px) { .updatebar { left: 50%; right: auto; transform: translateX(-50%); width: 520px; bottom: 96px; } }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
@@ -228,7 +299,7 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
       <h1>Parkeren Jutfasehof</h1>
       <div class="sub">Peizerdiep · parkeerplekken delen</div>
     </div>
-    <button class="whoami" id="whoami" hidden data-action="goto" data-tab="mijn">Kies je adres</button>
+    <span class="whoami" id="whoami"></span>
   </div>
 </header>
 
@@ -270,159 +341,143 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
 <main class="wrap" id="appScreen" hidden>
   <div id="banner" class="notices" style="margin-bottom:14px"></div>
 
-  <!-- OVERZICHT -->
-  <section data-tab="overzicht">
-    <div class="notices" id="notices"></div>
-    <div class="momentbar">
-      <div class="scroller" id="momentChips" role="group" aria-label="Kies moment"></div>
-      <div class="customMoment"><label for="momentInput">Ander moment</label><input type="datetime-local" id="momentInput" step="300"></div>
-    </div>
-    <div class="grid2">
-      <div class="panel">
-        <div class="row" style="justify-content:space-between;align-items:end">
-          <div><div class="eyebrow" id="momentEyebrow">Nu</div><h2 id="momentTitle">Op dit moment</h2></div>
+  <!-- KAART -->
+  <section data-tab="kaart">
+    <div class="notices" id="urgent"></div>
+    <div id="kaartView" class="flat">
+      <div class="momentbar"><div id="momentBar" class="flat"></div></div>
+      <div class="grid2">
+        <div class="panel">
           <div class="stats">
             <div class="stat free"><b id="freeCount">0</b><span class="muted small" id="freeLabel">vrij</span></div>
             <div class="stat charge" id="chargeStat" hidden><b id="chargeCount">0</b><span class="muted small">met laadpaal</span></div>
           </div>
-        </div>
-        <div class="mapbox" id="map"></div>
-        <div class="legend">
-          <span><i class="lg-free"></i>Vrij</span>
-          <span><i class="lg-claimed"></i>Geclaimd</span>
-          <span><i class="lg-own"></i>Eigenaar</span>
-          <span><i class="lg-unknown"></i>Niet gekoppeld</span>
-          <span><svg viewBox="0 0 12 20" aria-hidden="true"><path class="bolt" d="M8 0L0 11h5l-2 9 9-12H7z"/></svg>Openbare laadpaal</span>
-        </div>
-      </div>
-      <div class="flat">
-        <div class="panel">
-          <div class="row" style="justify-content:space-between">
-            <h2 id="optTitle">Vrije plekken</h2>
-            <button type="button" class="chip" id="onlyCharger" data-action="onlycharger" aria-pressed="false" hidden>Alleen met laadpaal</button>
+          <div class="mapbox" id="map"></div>
+          <div class="legend">
+            <span><i class="lg-free"></i>Vrij</span>
+            <span><i class="lg-claimed"></i>Geclaimd</span>
+            <span><i class="lg-own"></i>Eigenaar</span>
+            <span><i class="lg-unknown"></i>Niet gekoppeld</span>
+            <span><svg viewBox="0 0 12 20" aria-hidden="true"><path class="bolt" d="M8 0L0 11h5l-2 9 9-12H7z"/></svg>Openbare laadpaal</span>
           </div>
-          <div class="list" id="options"></div>
+          <div class="actions" id="actions">
+            <button class="btn" id="releaseBtn" data-action="releasesheet" hidden>Mijn plek vrijgeven</button>
+            <button class="btn" id="requestBtn" data-action="requestsheet">Vraag om een plek</button>
+          </div>
+        </div>
+        <div class="flat">
+          <div class="panel">
+            <div class="row" style="justify-content:space-between">
+              <h2 id="optTitle">Nu vrij</h2>
+              <button type="button" class="chip" id="onlyCharger" data-action="onlycharger" aria-pressed="false" hidden>Alleen met laadpaal</button>
+            </div>
+            <div class="list" id="options"></div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- VRIJGEVEN -->
-  <section data-tab="vrijgeven" hidden>
-    <div class="panel" style="max-width:640px;width:100%;justify-self:center">
-      <div><div class="eyebrow">Afwezig?</div><h2>Geef je plek vrij</h2></div>
-      <div id="relNeedsSetup"></div>
-      <form id="relForm" class="flat" novalidate>
-        <div class="field"><span class="lbl">Welke plek</span><div class="chips" id="relSpots"></div></div>
-        <div class="field"><span class="lbl">Hoe vaak</span>
-          <div class="chips">
-            <button type="button" class="chip" id="modeOnce" aria-pressed="true" data-action="mode" data-mode="once">Eenmalig</button>
-            <button type="button" class="chip" id="modeRec" aria-pressed="false" data-action="mode" data-mode="rec">Elke week</button>
-          </div>
-        </div>
-        <div id="onceFields" class="flat">
-          <div class="field"><label for="relFrom">Vanaf</label><input type="datetime-local" id="relFrom" step="300"></div>
-          <div class="field"><label for="relUntil">Tot</label><input type="datetime-local" id="relUntil" step="300"></div>
-          <div class="scroller" id="quickUntil" role="group" aria-label="Snel kiezen"></div>
-        </div>
-        <div id="recFields" class="flat" hidden>
-          <div class="field"><span class="lbl">Op deze dagen</span><div class="chips" id="recDays"></div></div>
-          <div class="two">
-            <div class="field"><label for="recFrom">Van</label><input type="time" id="recFrom" value="08:00" step="300"></div>
-            <div class="field"><label for="recUntil">Tot</label><input type="time" id="recUntil" value="18:00" step="300"></div>
-          </div>
-          <p class="muted small" style="margin:0">Ligt de eindtijd voor de begintijd, dan loopt het door tot de volgende dag.</p>
-        </div>
-        <div class="field"><label for="relNote">Opmerking (mag leeg)</label><input type="text" id="relNote" maxlength="140" placeholder="Bijv. graag recht parkeren"></div>
-        <div class="err" id="relErr" hidden></div>
-        <button class="btn block" type="submit" id="relSubmit">Plek vrijgeven</button>
-      </form>
-    </div>
-  </section>
-
-  <!-- VERZOEKEN -->
-  <section data-tab="verzoeken" hidden>
+  <!-- ACTIVITEIT -->
+  <section data-tab="activiteit" hidden>
     <div class="grid2">
       <div class="panel">
-        <div><div class="eyebrow">Bezoek of klusbus?</div><h2>Vraag om een plek</h2></div>
-        <form id="reqForm" class="flat" novalidate>
-          <div class="field"><label for="reqFrom">Vanaf</label><input type="datetime-local" id="reqFrom" step="300"></div>
-          <div class="field"><label for="reqUntil">Tot</label><input type="datetime-local" id="reqUntil" step="300"></div>
-          <div class="field"><label for="reqNote">Waarvoor</label><input type="text" id="reqNote" maxlength="140" placeholder="Bijv. ouders komen eten"></div>
-          <div class="err" id="reqErr" hidden></div>
-          <button class="btn block" type="submit">Verzoek plaatsen</button>
-        </form>
+        <h2>Voor jou</h2>
+        <div class="list" id="forYou"></div>
       </div>
       <div class="panel">
-        <h2>Wie zoekt een plek</h2>
-        <div class="list" id="requests"></div>
+        <h2>Van jou</h2>
+        <div class="list" id="mine"></div>
       </div>
     </div>
   </section>
 
-  <!-- MIJN -->
-  <section data-tab="mijn" hidden>
-    <div class="grid2">
-      <div class="flat">
-        <div class="panel">
-          <div><div class="eyebrow">Stap 1</div><h2>Op welk nummer woon je?</h2></div>
-          <div class="chips" id="houseChips"></div>
-          <div id="spotSetup" class="flat"></div>
-        </div>
-        <div class="panel" id="phonePanel">
-          <div><div class="eyebrow">Optioneel</div><h2>Bereikbaar via WhatsApp</h2></div>
-          <p class="muted small" style="margin:0">Buren kunnen je dan met één tik appen, bijvoorbeeld als ze je plek claimen of als je eerder terugkomt. Woon je met meer mensen, dan vult ieder zijn eigen naam en nummer in. Alleen bewoners in deze app zien dit.</p>
-          <div class="two">
-            <div class="field"><label for="cname">Voornaam</label><input type="text" id="cname" maxlength="30" autocomplete="given-name"></div>
-            <div class="field"><label for="phone">Mobiel nummer</label><input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
-          </div>
-          <div class="row"><button class="btn sm" data-action="savephone">Opslaan</button><button class="btn ghost sm" data-action="delphone" id="delPhone" hidden>Mijn nummer verwijderen</button></div>
-          <div id="housemates" class="flat"></div>
-        </div>
+  <!-- INSTELLINGEN -->
+  <section data-tab="instellingen" hidden>
+    <div class="setwrap">
+      <div class="eyebrow">Jouw woning</div>
+      <div class="panel setgroup">
+        <div class="set static" id="setHouse"><summary><span class="lab">Adres</span><span class="val" id="valHouse"></span><svg class="lock" viewBox="0 0 24 24" aria-label="vast"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></summary></div>
+        <details class="set" id="setSpot"><summary><span class="lab">Mijn plek op de kaart</span><span class="val" id="valSpot"></span></summary>
+          <div class="setbody" id="spotSetup"></div></details>
+        <details class="set" id="setCharger"><summary><span class="lab">Openbare laadpaal</span><span class="val" id="valCharger"></span></summary>
+          <div class="setbody" id="chargerToggles"></div></details>
+        <details class="set" id="phonePanel"><summary><span class="lab">Mijn WhatsApp</span><span class="val" id="valPhone"></span></summary>
+          <div class="setbody">
+            <p class="muted small" style="margin:0">Buren kunnen je dan met één tik appen, bijvoorbeeld als ze je plek claimen of als je eerder terugkomt. Woon je met meer mensen, dan vult ieder zijn eigen naam en nummer in. Alleen bewoners in deze app zien dit.</p>
+            <div class="two">
+              <div class="field"><label for="cname">Voornaam</label><input type="text" id="cname" maxlength="30" autocomplete="given-name"></div>
+              <div class="field"><label for="phone">Mobiel nummer</label><input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
+            </div>
+            <div class="err" id="phoneErr" hidden></div>
+            <div class="row"><button class="btn sm" data-action="savephone">Opslaan</button><button class="btn ghost sm" data-action="delphone" id="delPhone" hidden>Mijn nummer verwijderen</button></div>
+            <div id="housemates" class="flat"></div>
+          </div></details>
+        <div class="set static" id="setMates" hidden><summary><span class="lab" id="labMates">Ook op dit adres</span><span class="val" id="valMates"></span></summary></div>
       </div>
-      <div class="flat">
-        <div class="panel">
-          <h2>Mijn vrijgaven en claims</h2>
-          <div class="list" id="mine"></div>
-        </div>
-      </div>
-    </div>
-  </section>
+      <p class="muted small setnote">Verhuisd of verkeerd adres? Vraag de beheerder het aan te passen.</p>
 
-  <!-- INFO -->
-  <section data-tab="info" hidden>
-    <div class="panel" style="max-width:680px;width:100%;justify-self:center">
-      <h2>Spelregels</h2>
-      <ol class="rules">
-        <li>Parkeer alleen op een plek die vrijgegeven is en die je zelf geclaimd hebt.</li>
-        <li>Eerder weg dan gepland? Tik op "Ik ben weg", dan is de plek weer vrij.</li>
-        <li>Wees op tijd weg. De eigenaar moet op de eindtijd terecht kunnen.</li>
-        <li>Komt de eigenaar eerder terug, dan zie je dat bovenaan Overzicht. Zet je auto dan zo snel mogelijk weg.</li>
-        <li>Heeft een plek een openbare laadpaal, dan mag je laden zolang je die plek geclaimd hebt. Laden betaal je zelf via je laadpas.</li>
-        <li>Twijfel je, stuur elkaar even een berichtje.</li>
-      </ol>
-      <h3>Hoe het werkt</h3>
-      <p style="margin:0">Elke woning kiest bij "Mijn" het eigen huisnummer en de eigen plek. Je geeft je plek eenmalig vrij (bijvoorbeeld een weekend weg) of elke week (bijvoorbeeld werkdagen overdag). Buren kiezen op Overzicht een moment en zien welke plekken dan vrij zijn. Ze claimen er een, zodat er nooit twee auto's voor dezelfde plek komen.</p>
-      <p class="muted small" style="margin:0">Zichtbaar zijn huisnummers en, als je die invult, je voornaam en WhatsApp-nummer. Dat is optioneel. De app stuurt zelf geen berichten: je tikt op de WhatsApp-knop en verstuurt het bericht vanuit je eigen WhatsApp.</p>
-      <h3>Account</h3>
-      <div class="row" style="justify-content:space-between"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
-      <p class="muted small" style="margin:0">Tip: zet de app op je beginscherm. iPhone: deelknop, dan "Zet op beginscherm". Android: menu, dan "Toevoegen aan startscherm".</p>
+      <div class="eyebrow">Hulp</div>
+      <div class="panel setgroup">
+        <details class="set"><summary><span class="lab">Zo werkt het en de afspraken</span></summary>
+          <div class="setbody">
+            <p style="margin:0">Je geeft je plek vrij als je weg bent, eenmalig of elke week. Buren kiezen op de kaart een moment en claimen een vrije plek. Zo komen er nooit twee auto's voor dezelfde plek. Zoek je zelf een plek, vraag er dan om: buren zien je verzoek bij Activiteit.</p>
+            <ol class="rules">
+              <li>Parkeer alleen op een plek die vrijgegeven is en die je zelf geclaimd hebt.</li>
+              <li>Eerder weg dan gepland? Tik op "Ik ben weg", dan is de plek weer vrij.</li>
+              <li>Wees op tijd weg. De eigenaar moet op de eindtijd terecht kunnen.</li>
+              <li>Komt de eigenaar eerder terug, dan zie je dat bovenaan de kaart. Zet je auto dan zo snel mogelijk weg.</li>
+              <li>Heeft een plek een openbare laadpaal, dan mag je laden zolang je die plek geclaimd hebt. Laden betaal je zelf via je laadpas.</li>
+              <li>Twijfel je, stuur elkaar even een berichtje.</li>
+            </ol>
+            <p class="muted small" style="margin:0">Zichtbaar zijn huisnummers en, als je die invult, je voornaam en WhatsApp-nummer. De app stuurt zelf geen berichten: je tikt op de WhatsApp-knop en verstuurt het bericht vanuit je eigen WhatsApp.</p>
+          </div></details>
+        <details class="set"><summary><span class="lab">App op je beginscherm zetten</span></summary>
+          <div class="setbody">
+            <p style="margin:0"><strong>iPhone:</strong> tik in Safari op de deelknop en kies "Zet op beginscherm".</p>
+            <p style="margin:0"><strong>Android:</strong> tik in Chrome op het menu (drie puntjes) en kies "Toevoegen aan startscherm".</p>
+          </div></details>
+      </div>
+
+      <div id="adminPanel" class="flat" hidden>
+        <div class="eyebrow">Beheer</div>
+        <div class="panel setgroup">
+          <details class="set"><summary><span class="lab">Leden en adressen</span><span class="val" id="valMembers"></span></summary>
+            <div class="setbody">
+              <div id="adminMembers"></div>
+              <p class="muted small" style="margin:0">Kies een ander nummer om iemands adres aan te passen. Toegang intrekken verwijdert het lidmaatschap. Het account zelf verwijder je in Firebase onder Authentication.</p>
+            </div></details>
+          <details class="set"><summary><span class="lab">Plekken loskoppelen</span></summary>
+            <div class="setbody" id="adminSpots"></div></details>
+          <details class="set"><summary><span class="lab">Back-up en opruimen</span></summary>
+            <div class="setbody">
+              <div class="row"><button class="btn sm" data-action="backup">Back-up downloaden</button><button class="btn ghost sm" data-action="cleanup">Oude gegevens opruimen</button></div>
+              <p class="muted small" style="margin:0">Opruimen verwijdert vrijgaven, claims en verzoeken die langer dan 30 dagen voorbij zijn. Dat gebeurt ook vanzelf, één keer per week, als jij de app opent. Download eerst een back-up als je het zeker wilt weten.</p>
+            </div></details>
+        </div>
+        <p class="muted small setnote">Dit blok zien alleen beheerders.</p>
+      </div>
+
+      <div class="eyebrow">Account</div>
+      <div class="panel setgroup">
+        <div class="setrow"><span class="muted small" id="accountLine"></span><button class="btn ghost sm" data-action="logout">Uitloggen</button></div>
+        <details class="set"><summary><span class="lab">Account-ID (voor de beheerder)</span></summary>
+          <div class="setbody"><div class="row"><span class="mono-id" id="accountId"></span><button class="btn ghost sm" data-action="copyid">Kopieer</button></div></div></details>
+      </div>
     </div>
   </section>
 </main>
 
 <nav class="tabs" id="tabs" hidden role="tablist" aria-label="Navigatie">
-  <button role="tab" data-tab="overzicht" aria-selected="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 17V7h3.5a3 3 0 0 1 0 6H9"/></svg>Overzicht</button>
-  <button role="tab" data-tab="vrijgeven" aria-selected="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Vrijgeven</button>
-  <button role="tab" data-tab="verzoeken" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>Verzoeken<span class="badge" id="reqBadge" hidden></span></button>
-  <button role="tab" data-tab="mijn" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-5h4v5"/></svg>Mijn</button>
-  <button role="tab" data-tab="info" aria-selected="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>Info</button>
+  <button role="tab" data-tab="kaart" aria-selected="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 17V7h3.5a3 3 0 0 1 0 6H9"/></svg>Kaart</button>
+  <button role="tab" data-tab="activiteit" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>Activiteit<span class="badge" id="actBadge" hidden></span></button>
+  <button role="tab" data-tab="instellingen" aria-selected="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>Instellingen</button>
 </nav>
 
 <div id="sheetRoot"></div>
 <div class="toast" id="toast" hidden role="status"></div>
 
 <div id="updateBar" class="updatebar" hidden role="status"><span>Er is een nieuwe versie van de app.</span><button class="btn sm" data-action="reload">Vernieuwen</button></div>
-<script type="module" src="app.js?v=2"></script>
+<script type="module" src="app.js?v=6"></script>
 </body>
 </html>

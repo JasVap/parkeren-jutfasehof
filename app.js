@@ -7,9 +7,10 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, onSnapshot, query, where, addDoc, setDoc, updateDoc, deleteDoc,
-  getDoc, runTransaction, FieldPath, deleteField,
+  getDoc, getDocs, runTransaction, FieldPath, deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig } from "./config.js";
+import * as cfg from "./config.js";
+const firebaseConfig = cfg.firebaseConfig;
 
 const fbApp = initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
@@ -22,15 +23,16 @@ const APP_URL = location.origin + location.pathname.replace(/index\.html$/, "");
 const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
-const MIN = 60e3, H = 60 * MIN, D = 24 * H;
-const APP_VERSION = "2";
+const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
+const APP_VERSION = "6";
+const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
   user: null, member: null, house: null, live: false, unsubs: [],
   spots: {}, phones: {}, releases: [], recurring: [], claims: [], requests: [],
-  moment: null, tab: "overzicht", onlyCharger: false,
-  relMode: "once", relSpots: new Set(), recDays: new Set([1,2,3,4,5]),
+  moment: null, tab: "kaart", onlyCharger: false, momentOpen: false,
   sheet: null, authMode: "login",
+  isAdmin: false, ob: null, spotsLoaded: false,
 };
 
 /* ---------- hulpjes ---------- */
@@ -40,22 +42,44 @@ const now = () => Date.now();
 const pad = (n) => String(n).padStart(2, "0");
 const T = () => st.moment ?? now();
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-function toInput(ms) { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; }
-function fromInput(v) { return v ? new Date(v).getTime() : NaN; }
 function sod(ms) { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); }
 function at(base, dayOff, h, m = 0) { const d = new Date(sod(base)); d.setDate(d.getDate() + dayOff); d.setHours(h, m, 0, 0); return d.getTime(); }
-const round5 = (ms) => Math.ceil(ms / (5 * MIN)) * 5 * MIN;
+const ceilQ = (ms) => Math.ceil(ms / Q) * Q;
+const floorQ = (ms) => Math.floor(ms / Q) * Q;
 const fDay = new Intl.DateTimeFormat("nl-NL", { weekday: "short", day: "numeric", month: "short" });
 const fLong = new Intl.DateTimeFormat("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+const fShortDate = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" });
+const DOW = ["zo","ma","di","wo","do","vr","za"];
+const fDate = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" });
 const hm = (ms) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const clean = (s) => s.replace(/\./g, "");
+const dayDiff = (ms) => Math.round((sod(ms) - sod(now())) / D);
 function dayWord(ms) {
-  const diff = Math.round((sod(ms) - sod(now())) / D);
-  return diff === 0 ? "vandaag" : diff === 1 ? "morgen" : diff === -1 ? "gisteren" : fDay.format(ms);
+  const diff = dayDiff(ms);
+  return diff === 0 ? "vandaag" : diff === 1 ? "morgen" : diff === -1 ? "gisteren" : clean(fDay.format(ms));
 }
 const when = (ms) => `${dayWord(ms)} ${hm(ms)}`;
 function range(a, b) {
   const left = a <= now() && b > now() ? "nu" : when(a);
   return sod(a) === sod(b) ? `${left} tot ${hm(b)}` : `${left} tot ${when(b)}`;
+}
+// Kort voor op de kaart: "16:00", "zo 16:00" of "1 nov".
+function shortWhen(ms) {
+  const diff = dayDiff(ms);
+  if (diff === 0) return hm(ms);
+  if (diff > 0 && diff < 7) return `${DOW[new Date(ms).getDay()]} ${hm(ms)}`;
+  return clean(fShortDate.format(ms));
+}
+// "2 dagen en 11 uur", "45 minuten", "1 dag"
+function fmtDur(ms) {
+  if (!(ms > 0)) return "";
+  const totalMin = Math.round(ms / MIN);
+  const d = Math.floor(totalMin / 1440), h = Math.floor((totalMin % 1440) / 60), m = totalMin % 60;
+  const parts = [];
+  if (d) parts.push(`${d} ${d === 1 ? "dag" : "dagen"}`);
+  if (h) parts.push(`${h} uur`);
+  if (m && !d) parts.push(`${m} ${m === 1 ? "minuut" : "minuten"}`);
+  return parts.length > 1 ? parts.slice(0, -1).join(", ") + " en " + parts.at(-1) : parts[0] || "";
 }
 const ownerOf = (p) => st.spots[p]?.house || null;
 const spotsOf = (h) => SPOTS.filter(p => ownerOf(p) === h);
@@ -65,17 +89,10 @@ function spotName(p) { const h = ownerOf(p); if (!h) return null; const list = s
 const spotNr = (p) => spotName(p) ? `nr ${spotName(p)}` : "plek zonder adres";
 const plekVan = (p) => spotName(p) ? `de plek van nr ${spotName(p)}` : "een plek zonder adres";
 const mineLabel = (p) => spotsOf(st.house).length > 1 ? `Plek ${spotName(p)}` : "Mijn plek";
-const DOW = ["zo","ma","di","wo","do","vr","za"];
-const fShortDate = new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" });
-// Kort voor op de kaart: "16:00", "zo 16:00" of "1 nov".
-function shortWhen(ms) {
-  const diff = Math.round((sod(ms) - sod(now())) / D);
-  if (diff === 0) return hm(ms);
-  if (diff > 0 && diff < 7) return `${DOW[new Date(ms).getDay()]} ${hm(ms)}`;
-  return fShortDate.format(ms).replace(".", "");
-}
 const boltPill = `<span class="pill charge"><svg width="9" height="14" viewBox="0 0 12 20" aria-hidden="true" style="vertical-align:-2px"><path class="bolt" d="M8 0L0 11h5l-2 9 9-12H7z"/></svg> laadpaal</span>`;
+const clockIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
 function toast(m) { const t = $("#toast"); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3500); }
+function showErr(el, m) { if (!el) return; el.textContent = m || ""; el.hidden = !m; }
 
 /* WhatsApp */
 function normPhone(v) {
@@ -85,6 +102,9 @@ function normPhone(v) {
   else if (d.startsWith("0")) d = "31" + d.slice(1);
   return /^\d{10,15}$/.test(d) ? d : null;
 }
+const waShare = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`;
+const waIcon = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.3-.4.8-1.4.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.1.6a2.6 2.6 0 0 0 1.7-1.2 2.1 2.1 0 0 0 .2-1.2c-.1-.1-.3-.2-.5-.3z"/></svg>`;
+function waBtn(href, label) { return href ? `<a class="btn wa" href="${esc(href)}" target="_blank" rel="noopener">${waIcon}${esc(label)}</a>` : ""; }
 // Per woning kunnen meerdere bewoners een naam en nummer opgeven (houses/{nr}.contacts.{uid}).
 // Een los "phone"-veld uit de eerste versie telt mee tot het is verwijderd.
 function contactsOf(h) {
@@ -97,9 +117,181 @@ function contactsOf(h) {
 function waBtns(h, text) {
   return contactsOf(h).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(text)}`, c.name ? `App ${c.name}` : `App nr ${h}`)).join("");
 }
-const waShare = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`;
-const waIcon = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.3-.4.8-1.4.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.1.6a2.6 2.6 0 0 0 1.7-1.2 2.1 2.1 0 0 0 .2-1.2c-.1-.1-.3-.2-.5-.3z"/></svg>`;
-function waBtn(href, label) { return href ? `<a class="btn wa" href="${esc(href)}" target="_blank" rel="noopener">${waIcon}${esc(label)}</a>` : ""; }
+
+/* ---------- draaischijven ---------- */
+// Drie schijven: dag (met weekdag), uur, minuten per kwartier.
+const ROW = 42;
+function dayLabel(dayMs) {
+  const diff = dayDiff(dayMs), wd = DOW[new Date(dayMs).getDay()];
+  if (diff === 0) return "vandaag";
+  if (diff === 1) return `morgen · ${wd}`;
+  return clean(fDay.format(dayMs));
+}
+// Uren en minuten zijn rond: na 23 komt weer 00. Daarvoor staan ze een aantal keer achter elkaar
+// en zetten we na elke draai stil terug naar het middelste blok (dat ziet er precies hetzelfde uit).
+const REPS_H = 9, REPS_M = 25;
+const mod = (a, n) => ((a % n) + n) % n;
+class Wheels {
+  // opts: get() -> ms, set(ms), min() -> ms|null, max() -> ms|null
+  constructor(host, opts) { this.host = host; this.o = opts; this.build(); }
+  bounds() {
+    const min = this.o.min ? this.o.min() : null, max = this.o.max ? this.o.max() : null;
+    return { min: min == null ? null : min, max: max == null ? null : max };
+  }
+  build() {
+    const { min, max } = this.bounds();
+    const v = this.o.get();
+    const first = sod(Math.min(min ?? v, v)), last = max != null ? sod(Math.max(max, v)) : at(first, 120, 0);
+    this.days = [];
+    for (let d = first, i = 0; d <= last && i < 400; d = at(d, 1, 0), i++) this.days.push(d);
+    const hours = Array.from({ length: 24 * REPS_H }, (_, i) => i % 24);
+    const mins = Array.from({ length: 4 * REPS_M }, (_, i) => (i % 4) * 15);
+    const col = (key, items, fmt) => `<div class="wheel" data-w="${key}" tabindex="0" role="listbox" aria-label="${key === "d" ? "Dag" : key === "h" ? "Uur" : "Minuten"}">${items.map((x, i) => `<div data-i="${i}" role="option">${fmt(x)}</div>`).join("")}</div>`;
+    this.host.innerHTML = `<div class="wheels"><div class="band" aria-hidden="true"></div>${col("d", this.days, dayLabel)}${col("h", hours, pad)}${col("m", mins, pad)}</div>`;
+    this.cols = [...this.host.querySelectorAll(".wheel")];
+    this.cols.forEach(c => {
+      c.addEventListener("scroll", () => { if (this.lock) return; clearTimeout(c._t); c._t = setTimeout(() => this.commit(), 110); }, { passive: true });
+      c.addEventListener("click", (e) => { const it = e.target.closest("[data-i]"); if (it) c.scrollTo({ top: Number(it.dataset.i) * ROW, behavior: "smooth" }); });
+      c.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        e.preventDefault();
+        c.scrollTo({ top: (Math.round(c.scrollTop / ROW) + (e.key === "ArrowDown" ? 1 : -1)) * ROW, behavior: "smooth" });
+      });
+    });
+    requestAnimationFrame(() => this.sync(v));
+  }
+  vals(v) {
+    const d = new Date(v);
+    return [Math.max(0, this.days.findIndex(x => x === sod(v))), d.getHours(), Math.min(3, Math.floor(d.getMinutes() / 15))];
+  }
+  idx(v) { const [di, h, m] = this.vals(v); return [di, 24 * Math.floor(REPS_H / 2) + h, 4 * Math.floor(REPS_M / 2) + m]; }
+  sync(v) {
+    const ids = this.idx(v);
+    this.lock = true;
+    this.cols.forEach((c, k) => { c.scrollTop = ids[k] * ROW; });
+    this.mark(v);
+    clearTimeout(this._u); this._u = setTimeout(() => { this.lock = false; }, 80);
+  }
+  mark(v) {
+    const [di, h, m] = this.vals(v), { min, max } = this.bounds(), day = sod(v);
+    this.cols.forEach((c, k) => [...c.children].forEach((el, i) => {
+      const on = k === 0 ? i === di : k === 1 ? i % 24 === h : i % 4 === m;
+      el.classList.toggle("on", on);
+      el.setAttribute("aria-selected", on);
+      let off = false;
+      if (k === 1) {
+        const hStart = at(day, 0, i % 24), hEnd = hStart + H;
+        if (min != null && hEnd <= min) off = true;
+        if (max != null && hStart > max) off = true;
+      }
+      el.classList.toggle("off", off);
+    }));
+  }
+  commit() {
+    const [ci, hi, mi] = this.cols.map(c => Math.round(c.scrollTop / ROW));
+    const di = Math.max(0, Math.min(this.days.length - 1, ci));
+    let v = at(this.days[di], 0, mod(hi, 24), mod(mi, 4) * 15);
+    const { min, max } = this.bounds();
+    if (min != null && v < min) v = ceilQ(min) > (max ?? Infinity) ? min : ceilQ(min);
+    if (max != null && v > max) v = max;
+    this.o.set(v);
+    const want = this.idx(v);
+    if (want.some((x, k) => x !== [ci, hi, mi][k])) this.sync(v); else this.mark(v);
+  }
+}
+
+// Eén tijdveld: knop met dag en tijd, tik opent de draaischijven eronder.
+function timeField(host, { label, get, set, min, max }) {
+  const idp = "tf" + rid();
+  host.innerHTML = `<div class="field"><span class="lbl" id="${idp}l">${esc(label)}</span>
+    <button type="button" class="tfbtn" aria-expanded="false" aria-labelledby="${idp}l ${idp}v"><span id="${idp}v"></span></button></div>
+    <div class="tfw" hidden></div>`;
+  const btn = host.querySelector(".tfbtn"), box = host.querySelector(".tfw");
+  const paint = () => { const v = get(); btn.querySelector("span").innerHTML = `<span class="d">${esc(dayWord(v))}</span><span class="t">${hm(v)}</span>`; };
+  let wheels = null;
+  btn.addEventListener("click", () => {
+    const open = box.hidden;
+    box.hidden = !open; btn.setAttribute("aria-expanded", open);
+    if (open) wheels = new Wheels(box, { get, set: (v) => { set(v); paint(); }, min, max });
+  });
+  paint();
+  return { paint, refresh: () => { paint(); if (wheels && !box.hidden) wheels.sync(get()); } };
+}
+
+// Van en tot naast elkaar, één set schijven eronder. De eindtijd schuift mee met dezelfde duur.
+function rangeField(host, o) {
+  const s = { f: o.from, u: o.until, fromNow: !!o.fromNow, active: null };
+  const idp = "rf" + rid();
+  host.innerHTML = `<div class="range">
+      <div class="field"><span class="lbl" id="${idp}a">Vanaf</span><button type="button" class="tfbtn" data-k="f" aria-expanded="false" aria-labelledby="${idp}a ${idp}av"><span id="${idp}av"></span></button></div>
+      <div class="field"><span class="lbl" id="${idp}b">Tot</span><button type="button" class="tfbtn" data-k="u" aria-expanded="false" aria-labelledby="${idp}b ${idp}bv"><span id="${idp}bv"></span></button></div>
+    </div>
+    <div class="tfw" hidden><div class="chips nowrow" hidden><button type="button" class="chip" data-now>Vanaf nu</button></div><div class="wh"></div></div>
+    <div class="dur" aria-live="polite"></div>
+    ${o.quick ? `<div class="scroller quick" role="group" aria-label="Snel kiezen voor tot"></div>` : ""}`;
+  const box = host.querySelector(".tfw"), wh = host.querySelector(".wh"), nowRow = host.querySelector(".nowrow");
+  const btnF = host.querySelector('[data-k="f"]'), btnU = host.querySelector('[data-k="u"]');
+  const minF = () => o.minFrom ? o.minFrom() : (o.fromNow ? floorQ(now()) : null);
+  const maxU = () => o.maxUntil ? o.maxUntil() : null;
+  let wheels = null;
+  const f = () => s.fromNow ? now() : s.f;
+  const paint = () => {
+    btnF.querySelector("span").innerHTML = s.fromNow ? `<span class="d">Nu</span><span class="t">${esc(when(now()))}</span>` : `<span class="d">${esc(dayWord(s.f))}</span><span class="t">${hm(s.f)}</span>`;
+    btnU.querySelector("span").innerHTML = `<span class="d">${esc(dayWord(s.u))}</span><span class="t">${hm(s.u)}</span>`;
+    btnF.setAttribute("aria-expanded", s.active === "f"); btnU.setAttribute("aria-expanded", s.active === "u");
+    const dur = fmtDur(s.u - f());
+    host.querySelector(".dur").innerHTML = dur ? `${clockIcon}<span>${esc(o.durLabel || "Duur")}: <strong>${esc(dur)}</strong></span>` : "";
+    const q = host.querySelector(".quick");
+    if (q) q.innerHTML = quickUntil(f()).filter(([, v]) => v > f() && (maxU() == null || v <= maxU())).map(([l, v, sfx]) =>
+      `<button type="button" class="chip" data-q="${v}" aria-pressed="${Math.abs(s.u - v) < MIN}">${esc(l)}${sfx ? `<span class="tag">· ${esc(sfx)}</span>` : ""}</button>`).join("");
+    o.onChange && o.onChange();
+  };
+  const setF = (v) => {
+    const dur = s.u - f();
+    s.fromNow = false; s.f = v;
+    let u = v + (dur > 0 ? dur : 3 * H);
+    if (maxU() != null && u > maxU()) u = maxU();
+    if (u <= v) u = v + Q;
+    s.u = u; paint();
+  };
+  const setU = (v) => { s.u = Math.max(v, f() + Q); if (maxU() != null && s.u > maxU()) s.u = maxU(); paint(); };
+  const open = (k) => {
+    if (s.active === k) { s.active = null; box.hidden = true; paint(); return; }
+    s.active = k; box.hidden = false; nowRow.hidden = !(k === "f" && o.fromNow);
+    wheels = new Wheels(wh, k === "f"
+      ? { get: f, set: setF, min: minF, max: () => (maxU() != null ? maxU() - Q : null) }
+      : { get: () => s.u, set: setU, min: () => f() + Q, max: maxU });
+    paint();
+  };
+  btnF.addEventListener("click", () => open("f"));
+  btnU.addEventListener("click", () => open("u"));
+  host.addEventListener("click", (e) => {
+    const q = e.target.closest("[data-q]");
+    if (q) { setU(Number(q.dataset.q)); if (wheels && s.active === "u") wheels.sync(s.u); }
+    if (e.target.closest("[data-now]")) { const dur = s.u - f(); s.fromNow = true; s.u = Math.max(now() + Q, now() + dur); paint(); if (wheels) wheels.sync(f()); }
+  });
+  paint();
+  return {
+    get: () => ({ from: f(), until: s.u, fromNow: s.fromNow }),
+    set: (from, until) => { s.fromNow = false; s.f = from; s.u = until; paint(); },
+    paint,
+  };
+}
+// Snelknoppen voor "tot", rekenend vanaf de start, met de dag waarop je uitkomt.
+function quickUntil(f) {
+  const dow = new Date(f).getDay();
+  let tonight = at(f, 0, 23); if (tonight <= f) tonight = at(f, 1, 23);
+  let sun = at(f, (7 - dow) % 7, 20); if (sun <= f) sun = at(f, 7, 20);
+  const dayOf = (v) => `${DOW[new Date(v).getDay()]} ${clean(fShortDate.format(v))}`;
+  return [
+    ["3 uur", f + 3 * H, hm(f + 3 * H)],
+    [sod(tonight) === sod(f) ? "Vanavond 23:00" : "Morgenavond 23:00", tonight, ""],
+    ["Morgen 08:00", at(f, 1, 8), DOW[new Date(at(f, 1, 8)).getDay()]],
+    ["Zondag 20:00", sun, clean(fShortDate.format(sun))],
+    ["2 dagen", f + 2 * D, dayOf(f + 2 * D)],
+    ["1 week", f + 7 * D, dayOf(f + 7 * D)],
+  ];
+}
 
 /* ---------- beschikbaarheid ---------- */
 function windows() {
@@ -134,6 +326,56 @@ function statusAt(p, t, wins) {
   const freeUntil = next ? next.from : w.end;
   return { cls: "free", text: `tot ${shortWhen(freeUntil)}`, w, freeUntil };
 }
+// Is plek p vrij en ongeclaimd gedurende de hele periode [a, b)?
+function freeDuring(p, a, b, wins) {
+  const w = wins.find(w => w.spot === p && w.start <= a && w.end >= b);
+  if (!w) return null;
+  return claimsIn(w).some(c => c.from < b && c.until > a) ? null : w;
+}
+
+// Is er in deze vrijgave vanaf nu nog tijd over die niemand geclaimd heeft?
+function hasFreeTime(w) {
+  let t = Math.max(w.start, now());
+  for (const c of claimsIn(w)) { if (c.from > t + MIN) return true; t = Math.max(t, c.until); }
+  return t < w.end - MIN;
+}
+
+/* ---------- agenda ---------- */
+// Een afspraak in je eigen agenda als herinnering: via Google Agenda of als .ics-bestand (iPhone, Outlook).
+const calItems = new Map();
+const calIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
+function calBtn(item, cls = "btn ghost sm") { const k = rid(); calItems.set(k, item); return `<button class="${cls}" data-action="calendar" data-k="${k}">${calIcon}Zet in agenda</button>`; }
+const icsDate = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+const icsText = (t) => String(t).replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+function icsFile(it) {
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Parkeren Jutfasehof//NL", "CALSCALE:GREGORIAN", "BEGIN:VEVENT",
+    `UID:${rid()}@parkeren-jutfasehof`, `DTSTAMP:${icsDate(now())}`, `DTSTART:${icsDate(it.start)}`, `DTEND:${icsDate(it.end)}`,
+    `SUMMARY:${icsText(it.title)}`, `DESCRIPTION:${icsText(it.desc + "\n" + APP_URL)}`,
+    "BEGIN:VALARM", `TRIGGER:-PT${it.alarmMin ?? 15}M`, "ACTION:DISPLAY", `DESCRIPTION:${icsText(it.title)}`, "END:VALARM",
+    "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+}
+function googleCalUrl(it) {
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(it.title)}&dates=${icsDate(it.start)}/${icsDate(it.end)}&details=${encodeURIComponent(it.desc + "\n" + APP_URL)}`;
+}
+function calendarSheet(k) {
+  const it = calItems.get(k); if (!it) return;
+  openSheet("Zet in agenda", `<div class="notice"><strong>${esc(it.title)}</strong><span>${esc(range(it.start, it.end))}</span></div>
+    <p class="muted small" style="margin:0">${esc(it.hint || "")} Kies de agenda die je gebruikt:</p>
+    <a class="btn block" href="${esc(googleCalUrl(it))}" target="_blank" rel="noopener">Google Agenda</a>
+    <button class="btn ghost block" data-action="ics" data-k="${k}">iPhone of Outlook agenda</button>
+    <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
+}
+function downloadIcs(k) {
+  const it = calItems.get(k); if (!it) return;
+  const url = URL.createObjectURL(new Blob([icsFile(it)], { type: "text/calendar;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = "parkeren-jutfasehof.ics";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+// Herinnering voor wie een plek van een buur gebruikt: een kwartier voor de eindtijd de auto wegzetten.
+const calForClaim = (c) => ({ title: `Auto wegzetten van ${plekVan(c.spot)}`, start: c.until - 15 * MIN, end: c.until, desc: `Je hebt ${plekVan(c.spot)} geclaimd tot ${when(c.until)}.`, alarmMin: 0, hint: "Je krijgt een kwartier voor de eindtijd een herinnering om je auto weg te zetten." });
+// Voor de eigenaar: de periode dat de plek vrijgegeven is.
+const calForRelease = (spot, a, b) => ({ title: "Parkeerplek vrijgegeven", start: a, end: b, desc: `${mineLabel(spot)} is vrijgegeven in ${APP}. Tot ${when(b)} kan een buur erop staan.`, alarmMin: 30, hint: "Zo zie je in je agenda wanneer je plek vrijgegeven is." });
 
 /* ---------- plattegrond ---------- */
 const GEO = {};
@@ -147,8 +389,9 @@ function renderMap(wins, target = "#map", mode = "status") {
     const mine = st.house && o === st.house;
     let s = statusAt(p, t, wins);
     if (mode === "link") s = mine ? { cls: "linkmine", text: "jouw plek" } : o ? { cls: "own", text: "" } : { cls: "unknown", text: "tik = mijn plek" };
+    if (mode === "show") s = mine ? { cls: "linkmine", text: "jouw plek" } : o ? { cls: "own", text: "" } : { cls: "unknown", text: "" };
     const big = spotName(p) || "?";
-    svg += `<g class="spot ${s.cls}${mine && mode !== "link" ? " mine" : ""}" data-action="${mode === "link" ? "linktap" : "spot"}" data-spot="${p}" tabindex="0" role="button" aria-label="${esc(spotNr(p))}: ${esc(s.cls === "free" ? "vrij " + s.text : s.text)}">
+    svg += `<g class="spot ${s.cls}${mine && mode !== "link" ? " mine" : ""}" data-action="${mode === "link" ? "linktap" : mode === "show" ? "" : "spot"}" data-spot="${p}" tabindex="0" role="button" aria-label="${esc(spotNr(p))}: ${esc(s.cls === "free" ? "vrij " + s.text : s.text)}">
       <rect x="${g.x + 3}" y="${g.y + 3}" width="94" height="74" rx="5"/>
       <text class="pnum" x="${g.x + 50}" y="${g.y + 40}" text-anchor="middle">${esc(big)}</text>
       <text class="pstate" x="${g.x + 50}" y="${g.y + 62}" text-anchor="middle">${esc(s.text)}</text>
@@ -167,21 +410,40 @@ function renderMap(wins, target = "#map", mode = "status") {
     </g></svg>`;
 }
 
-/* ---------- overzicht ---------- */
-function momentOptions() {
-  const n = now(), o = [["Nu", null]];
-  const tonight = at(n, 0, 19); if (tonight > n) o.push(["Vanavond 19:00", tonight]);
-  o.push(["Vannacht 23:00", at(n, 0, 23) > n ? at(n, 0, 23) : at(n, 1, 23)]);
-  o.push(["Morgen 09:00", at(n, 1, 9)], ["Morgen 19:00", at(n, 1, 19)]);
-  const dow = new Date(n).getDay();
-  const sat = at(n, ((6 - dow + 7) % 7) || 7, 12); o.push([`${fDay.format(sat)} 12:00`, sat]);
-  return o;
+/* ---------- kaart ---------- */
+// Standaard "nu"; tik op de balk voor de draaischijven, "Nu" zet het terug.
+let momentWheels = null;
+const clockSvg = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+const calSvg = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
+function mountMoment() {
+  const host = $("#momentBar");
+  host.innerHTML = `<div class="momentrow" id="momentRow">
+      <button type="button" class="momentbtn" id="momentBtn" aria-expanded="false"><span class="ico"></span><span class="mtxt"></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+      <button type="button" class="momentnow" id="momentNow" hidden aria-label="Terug naar nu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>Nu</button>
+    </div>
+    <div class="tfw" id="momentWheels" hidden></div>`;
+  $("#momentBtn").addEventListener("click", () => {
+    const box = $("#momentWheels"), open = box.hidden;
+    box.hidden = !open; $("#momentBtn").setAttribute("aria-expanded", open);
+    if (open) momentWheels = new Wheels(box, { get: () => st.moment ?? ceilQ(now()), set: (v) => { st.moment = v; render(); }, min: () => floorQ(now()) });
+  });
+  $("#momentNow").addEventListener("click", () => setMoment(null));
+}
+function setMoment(v) {
+  st.moment = v == null || v <= now() ? null : v;
+  const box = $("#momentWheels"); if (box) { box.hidden = true; $("#momentBtn").setAttribute("aria-expanded", "false"); }
+  render();
 }
 function renderMoment() {
   const sel = st.moment;
-  $("#momentChips").innerHTML = momentOptions().map(([l, v]) => `<button type="button" class="chip" data-action="moment" data-v="${v ?? ""}" aria-pressed="${sel === v}">${esc(l)}</button>`).join("");
-  $("#momentEyebrow").textContent = sel == null ? "Nu" : fLong.format(sel);
-  $("#momentTitle").textContent = sel == null ? "Op dit moment" : `${dayWord(sel)} om ${hm(sel)}`;
+  $("#momentRow").classList.toggle("other", sel != null);
+  const b = $("#momentBtn");
+  b.querySelector(".ico").outerHTML = (sel == null ? clockSvg : calSvg).replace("<svg", '<svg class="ico"');
+  b.querySelector(".mtxt").innerHTML = sel == null
+    ? `<span class="d">Nu</span><span class="t">${esc(clean(fDay.format(now())))} ${hm(now())} · tik voor een ander moment</span>`
+    : `<span class="d">${esc(dayWord(sel))} ${hm(sel)}</span><span class="t">${esc(fLong.format(sel))}</span>`;
+  b.setAttribute("aria-label", sel == null ? "Nu. Tik om een ander moment te kiezen" : `${dayWord(sel)} ${hm(sel)}. Tik om een ander moment te kiezen`);
+  $("#momentNow").hidden = sel == null;
 }
 function renderOptions(wins) {
   const t = T();
@@ -190,10 +452,13 @@ function renderOptions(wins) {
   $("#freeCount").textContent = free.length;
   $("#freeLabel").textContent = free.length === 1 ? "plek vrij" : "plekken vrij";
   const anyCharger = SPOTS.some(hasCharger);
-  $("#chargeStat").hidden = !anyCharger;
+  $("#chargeStat").hidden = !anyCharger || !free.length;
   $("#chargeCount").textContent = free.filter(([p]) => hasCharger(p)).length;
   const oc = $("#onlyCharger"); oc.hidden = !anyCharger; oc.setAttribute("aria-pressed", st.onlyCharger && anyCharger);
   $("#optTitle").textContent = st.moment == null ? "Nu vrij" : `Vrij ${dayWord(t)} om ${hm(t)}`;
+  const hasSpot = !!(st.house && spotsOf(st.house).length);
+  $("#releaseBtn").hidden = !hasSpot;
+  $("#actions").classList.toggle("one", !hasSpot);
   if (st.onlyCharger && anyCharger) {
     const all = free.length; free = free.filter(([p]) => hasCharger(p));
     if (!free.length && all) { $("#options").innerHTML = `<div class="empty">Er ${all === 1 ? "is 1 plek" : `zijn ${all} plekken`} vrij, maar geen met laadpaal. <button class="btn sm ghost" data-action="onlycharger">Toon alle vrije plekken</button></div>`; return; }
@@ -201,17 +466,17 @@ function renderOptions(wins) {
   let html = "";
   if (!free.length) {
     const next = wins.map(w => ({ w, s: statusAt(w.spot, Math.max(w.start, t), wins) })).find(x => x.w.start > t && x.s.cls === "free");
-    html = `<div class="empty"><span>Op dit moment is er geen plek vrij.</span>
-      ${next ? `<span>Eerstvolgende: <strong>${esc(plekVan(next.w.spot))}</strong> vanaf ${esc(when(next.w.start))}. <a href="#" data-action="moment" data-v="${next.w.start}">Bekijk</a></span>` : ""}
-      <button class="btn sm ghost" data-action="goto" data-tab="verzoeken">Vraag om een plek</button></div>`;
+    html = `<div class="empty"><span>${st.moment == null ? "Op dit moment is er geen plek vrij." : "Op dat moment is er geen plek vrij."}</span>
+      ${next ? `<span>Eerstvolgende: <strong>${esc(plekVan(next.w.spot))}</strong> vanaf ${esc(when(next.w.start))}. <a href="#" data-action="moment" data-v="${next.w.start}">Bekijk</a></span>` : ""}</div>`;
   } else {
     html = free.map(([p, s]) => {
       const mine = st.house && s.w.house === st.house;
       const canClaim = !mine && st.house && s.freeUntil > now();
-      return `<div class="card is-free"><div class="head"><span class="pid">${esc(spotNr(p))}</span>${hasCharger(p) ? boltPill : ""}${s.w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}${mine ? `<span class="pill neutral">jouw plek</span>` : ""}</div>
-        <div class="when">vrij ${esc(range(t, s.freeUntil))}</div>
-        ${s.w.note ? `<div class="note">${esc(s.w.note)}</div>` : ""}
-        ${canClaim ? `<button class="btn green sm" data-action="claimsheet" data-key="${s.w.key}">Claim deze plek</button>` : ""}</div>`;
+      return `<div class="card is-free optcard"><div class="optmain">
+          <div class="big">vrij tot ${esc(when(s.freeUntil))}</div>
+          <div class="sub">${mine ? "jouw plek" : `plek van ${esc(spotNr(p))}`}${hasCharger(p) ? ` ${boltPill}` : ""}${s.w.src === "rec" ? ` <span class="pill neutral">wekelijks</span>` : ""}</div>
+          ${s.w.note ? `<div class="note">${esc(s.w.note)}</div>` : ""}</div>
+        ${canClaim ? `<button class="btn green sm" data-action="claimsheet" data-key="${s.w.key}">Claim</button>` : ""}</div>`;
     }).join("");
   }
   if (taken.length) {
@@ -220,137 +485,385 @@ function renderOptions(wins) {
   }
   $("#options").innerHTML = html;
 }
-function renderNotices() {
-  const n = now(), out = [];
+function renderNotices(wins) {
+  const n = now(), urgent = [], forYou = [];
+  let badge = 0;
   if (st.house) {
     for (const c of st.claims) {
       if (c.house !== st.house) continue;
       if (c.earlyReturn && c.earlyReturn > n - 2 * H) {
         const gone = !(c.until > c.from);
-        out.push(`<div class="notice warn"><strong>Nr ${esc(c.owner)} komt eerder terug</strong><span>${gone ? `Je claim op ${esc(plekVan(c.spot))} vervalt.` : `Zet je auto op ${esc(plekVan(c.spot))} weg voor ${esc(when(c.earlyReturn))}.`}</span>
-          <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="ack" data-id="${c.id}" data-spot="${c.spot}">Begrepen</button></div></div>`);
-      } else if (c.until > c.from && c.from <= n && c.until > n) {
-        const soon = c.until - n <= H;
-        out.push(`<div class="notice ${soon ? "amber" : "green"}"><strong>${soon ? `Je claim op ${esc(plekVan(c.spot))} loopt bijna af` : `Je staat op ${esc(plekVan(c.spot))}`}</strong><span>Tot ${esc(when(c.until))}.</span>
-          <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">Ik ben weg</button></div></div>`);
+        const h = `<div class="notice warn"><strong>Nr ${esc(c.owner)} komt eerder terug</strong><span>${gone ? `Je claim op ${esc(plekVan(c.spot))} vervalt.` : `Zet je auto op ${esc(plekVan(c.spot))} weg voor ${esc(when(c.earlyReturn))}.`}</span>
+          <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="ack" data-id="${c.id}" data-spot="${c.spot}">Begrepen</button></div></div>`;
+        urgent.push(h); forYou.push(h); badge++;
+      } else if (c.until > c.from && c.from <= n && c.until > n && c.until - n <= H) {
+        const h = `<div class="notice amber"><strong>Je claim op ${esc(plekVan(c.spot))} loopt bijna af</strong><span>Tot ${esc(when(c.until))}.</span>
+          <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">Ik ben weg</button></div></div>`;
+        urgent.push(h); forYou.push(h);
       }
     }
     for (const c of liveClaims()) {
-      if (c.owner === st.house && c.from <= n && c.until > n) out.push(`<div class="notice"><strong>Nr ${esc(c.house)} staat op ${esc(mineLabel(c.spot).replace("Mijn plek", "jouw plek").replace("Plek", "jouw plek"))}</strong><span>Tot ${esc(when(c.until))}. Eerder terug? Zie Mijn.</span></div>`);
+      if (c.owner === st.house && c.from <= n && c.until > n) forYou.push(`<div class="notice"><strong>Nr ${esc(c.house)} staat op ${spotsOf(st.house).length > 1 ? `jouw plek ${esc(spotName(c.spot))}` : "jouw plek"}</strong><span>Tot ${esc(when(c.until))}. Eerder terug? Tik bij Van jou op Aanpassen.</span></div>`);
+    }
+    // Jouw verzoek is door een buur geregeld.
+    for (const r of st.requests) {
+      if (r.house !== st.house || !r.offeredSpot || r.ackOffered || !(r.until > n)) continue;
+      badge++;
+      forYou.unshift(`<div class="notice green"><strong>Nr ${esc(r.offeredBy)} heeft je verzoek geregeld</strong><span>Je kunt ${esc(range(Math.max(r.from, n), r.until))} op ${esc(plekVan(r.offeredSpot))} staan.</span>
+        <div class="row" style="margin-top:6px">${contactsOf(r.offeredBy).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(`Hoi! Dank je wel dat ik ${range(r.from, r.until)} op je parkeerplek mag staan. Groet, ${STREET} ${st.house}`)}`, `Bedank ${c.name || "nr " + r.offeredBy}`)).join("")}<button class="btn sm ghost" data-action="ackoffer" data-id="${r.id}">Begrepen</button></div></div>`);
     }
   }
-  const openReq = st.requests.filter(r => !r.offeredSpot && r.until > n && r.house !== st.house).length;
-  if (openReq) out.push(`<div class="notice"><strong>${openReq} ${openReq === 1 ? "buur zoekt" : "buren zoeken"} een plek</strong><span><a href="#verzoeken" data-action="goto" data-tab="verzoeken">Bekijk verzoeken</a></span></div>`);
-  $("#notices").innerHTML = out.join("");
-  const b = $("#reqBadge"); b.hidden = !openReq; b.textContent = openReq;
+  // Verzoeken van buren. Is jouw plek dan vrij, dan direct aanbieden.
+  const my = st.house ? spotsOf(st.house) : [];
+  const open = st.requests.filter(r => !r.offeredSpot && r.until > n && r.house !== st.house).sort((a, b) => a.from - b.from);
+  for (const r of open) {
+    const p = my.find(p => freeDuring(p, Math.max(r.from, n), r.until, wins));
+    const note = r.note ? `<div class="note">${esc(r.note)}</div>` : "";
+    if (p) forYou.push(`<div class="notice reqcard"><div><strong>Nr ${esc(r.house)} zoekt een plek</strong><div>${esc(range(r.from, r.until))}. ${my.length > 1 ? `Jouw plek ${esc(spotName(p))}` : "Jouw plek"} is dan vrij.</div>${note}</div>
+      <button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}">Bied aan</button></div>`);
+    else forYou.push(`<div class="notice"><strong>Nr ${esc(r.house)} zoekt een plek</strong><span>${esc(range(r.from, r.until))}</span>${note}
+      ${my.length ? `<div class="row" style="margin-top:6px">${my.map(q => `<button class="btn ghost sm" data-action="offer" data-id="${r.id}" data-spot="${q}" ${canOffer(q, r) ? "" : "disabled"}>Bied ${my.length > 1 ? "plek " + esc(spotName(q)) : "je plek"} aan</button>`).join("")}</div>` : ""}</div>`);
+    if (my.length) badge++;
+  }
+  $("#urgent").innerHTML = urgent.join("");
+  $("#forYou").innerHTML = forYou.length ? forYou.join("") : `<div class="empty">Er is nu niets voor jou.</div>`;
+  const bd = $("#actBadge"); bd.hidden = !badge; bd.textContent = badge;
 }
 function renderBanner() {
   const b = [];
-  if (!st.house) b.push(`<div class="notice green"><strong>Welkom</strong><span>Kies je huisnummer en je plek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>.</span></div>`);
-  else if (!spotsOf(st.house).length) b.push(`<div class="notice green"><span>Koppel je parkeerplek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>, dan kun je hem vrijgeven.</span></div>`);
+  // Alleen als iemand de rondleiding heeft weggeklikt zonder plek te koppelen.
+  if (st.house && st.spotsLoaded && !spotsOf(st.house).length && !st.ob) b.push(`<div class="notice green"><span>Je hebt nog geen parkeerplek gekoppeld. Dat doe je bij <a href="#instellingen" data-action="goto" data-tab="instellingen">Instellingen</a>.</span></div>`);
   $("#banner").innerHTML = b.join("");
-  $("#whoami").textContent = st.house ? `nr ${st.house}` : "Kies je adres";
+  $("#whoami").textContent = st.house ? `nr ${st.house}` : "";
 }
 
-/* ---------- vrijgeven ---------- */
-function quickUntil(from) {
-  const f = isNaN(from) ? now() : from, dow = new Date(f).getDay();
-  let tonight = at(f, 0, 23); if (tonight <= f) tonight = at(f, 1, 23);
-  let sun = at(f, (7 - dow) % 7, 20); if (sun <= f) sun = at(f, 7, 20);
-  return [["3 uur", f + 3 * H], ["Vanavond 23:00", tonight], ["Morgen 08:00", at(f, 1, 8)], ["Zondag 20:00", sun], ["2 dagen", f + 2 * D], ["1 week", f + 7 * D]];
-}
-function renderQuick() {
-  const u = fromInput($("#relUntil").value);
-  $("#quickUntil").innerHTML = quickUntil(fromInput($("#relFrom").value)).map(([l, v]) =>
-    `<button type="button" class="chip" data-action="quick" data-v="${v}" aria-pressed="${Math.abs(u - v) < MIN}">${l}</button>`).join("");
-}
-function renderRelForm() {
+/* ---------- vrijgeven (formulier, in het tabblad en in een paneel) ---------- */
+function mountReleaseForm(host, opts = {}) {
   const my = st.house ? spotsOf(st.house) : [];
-  for (const p of [...st.relSpots]) if (!my.includes(p)) st.relSpots.delete(p);
-  if (my.length === 1 && !st.relSpots.size) st.relSpots.add(my[0]);
-  $("#relNeedsSetup").innerHTML = !st.house || !my.length ? `<div class="notice green"><span>Koppel eerst je huisnummer en plek bij <a href="#mijn" data-action="goto" data-tab="mijn">Mijn</a>.</span></div>` : "";
-  $("#relSpots").innerHTML = my.length ? my.map(p => `<button type="button" class="chip" data-action="relspot" data-spot="${p}" aria-pressed="${st.relSpots.has(p)}">${esc(mineLabel(p))}</button>`).join("") : `<span class="muted">Nog geen plek gekoppeld.</span>`;
-  $("#relSubmit").disabled = !my.length;
-  $("#modeOnce").setAttribute("aria-pressed", st.relMode === "once");
-  $("#modeRec").setAttribute("aria-pressed", st.relMode === "rec");
-  $("#onceFields").hidden = st.relMode !== "once";
-  $("#recFields").hidden = st.relMode !== "rec";
-  $("#recDays").innerHTML = DAYS.map(([d, l]) => `<button type="button" class="chip" data-action="recday" data-d="${d}" aria-pressed="${st.recDays.has(d)}">${l}</button>`).join("");
-  renderQuick();
+  if (!my.length) {
+    host.innerHTML = `<div class="notice green"><span>Koppel eerst je plek bij <a href="#instellingen" data-action="goto" data-tab="instellingen">Instellingen</a>.</span></div>`;
+    return;
+  }
+  const sel = new Set(opts.spot && my.includes(opts.spot) ? [opts.spot] : [my[0]]);
+  const days = new Set([1, 2, 3, 4, 5]);
+  let mode = "once";
+  const idp = "rel" + rid();
+  host.innerHTML = `<form class="flat" novalidate>
+      ${my.length > 1 ? `<div class="field"><span class="lbl">Welke plek</span><div class="chips" data-r="spots"></div></div>` : ""}
+      <div class="field"><span class="lbl">Hoe vaak</span><div class="chips" data-r="mode"></div></div>
+      <div data-r="once"></div>
+      <div data-r="rec" class="flat" hidden>
+        <div class="field"><span class="lbl">Op deze dagen</span><div class="chips" data-r="days"></div></div>
+        <div class="two">
+          <div class="field"><label for="${idp}rf">Van</label><input type="time" id="${idp}rf" value="08:00" step="900"></div>
+          <div class="field"><label for="${idp}ru">Tot</label><input type="time" id="${idp}ru" value="18:00" step="900"></div>
+        </div>
+        <p class="muted small" style="margin:0">Ligt de eindtijd voor de begintijd, dan loopt het door tot de volgende dag.</p>
+      </div>
+      <div class="field"><label for="${idp}n">Opmerking (mag leeg)</label><input type="text" id="${idp}n" maxlength="140" placeholder="Bijv. graag recht parkeren"></div>
+      <div class="err" data-r="err" hidden></div>
+      <button class="btn block" type="submit">Plek vrijgeven</button>
+    </form>`;
+  const q = (k) => host.querySelector(`[data-r="${k}"]`);
+  const rng = rangeField(q("once"), { fromNow: true, from: now(), until: at(now(), 1, 8), quick: true, durLabel: "Vrij voor" });
+  const paint = () => {
+    if (q("spots")) q("spots").innerHTML = my.map(p => `<button type="button" class="chip" data-sp="${p}" aria-pressed="${sel.has(p)}">${esc(mineLabel(p))}</button>`).join("");
+    q("mode").innerHTML = `<button type="button" class="chip" data-mode="once" aria-pressed="${mode === "once"}">Eenmalig</button><button type="button" class="chip" data-mode="rec" aria-pressed="${mode === "rec"}">Elke week</button>`;
+    q("once").hidden = mode !== "once"; q("rec").hidden = mode !== "rec";
+    q("days").innerHTML = DAYS.map(([d, l]) => `<button type="button" class="chip" data-day="${d}" aria-pressed="${days.has(d)}">${l}</button>`).join("");
+  };
+  host.addEventListener("click", (e) => {
+    const sp = e.target.closest("[data-sp]"), md = e.target.closest("[data-mode]"), dy = e.target.closest("[data-day]");
+    if (sp) { sel.has(sp.dataset.sp) ? sel.delete(sp.dataset.sp) : sel.add(sp.dataset.sp); paint(); }
+    if (md) { mode = md.dataset.mode; paint(); }
+    if (dy) { const d = Number(dy.dataset.day); days.has(d) ? days.delete(d) : days.add(d); paint(); }
+  });
+  host.querySelector("form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = q("err"); showErr(err, "");
+    const btn = host.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await submitRelease({ spots: [...sel], mode, range: rng.get(), days: [...days], ft: $(`#${idp}rf`).value, ut: $(`#${idp}ru`).value, note: $(`#${idp}n`).value.trim().slice(0, 140) }, (m) => showErr(err, m));
+    } finally { btn.disabled = false; }
+  });
+  paint();
+}
+function releaseSheet(spot) {
+  openSheet("Mijn plek vrijgeven", `<div id="relSheet"></div>`);
+  mountReleaseForm($("#relSheet"), { spot });
 }
 
 /* ---------- verzoeken ---------- */
-function renderRequests(wins) {
+function requestSheet() {
+  const from = st.moment ?? ceilQ(now() + 15 * MIN);
+  openSheet("Vraag om een plek", `<p class="muted small" style="margin:0">Buren zien je verzoek bij Activiteit en kunnen hun plek aanbieden.</p>
+    <form id="reqForm" class="flat" novalidate>
+      <div id="reqRange" class="flat"></div>
+      <div class="field"><label for="reqNote">Waarvoor (mag leeg)</label><input type="text" id="reqNote" maxlength="140" placeholder="Bijv. ouders komen eten"></div>
+      <div class="err" id="reqErr" hidden></div>
+      <button class="btn block" type="submit">Verzoek plaatsen</button>
+    </form>`);
+  const rr = rangeField($("#reqRange"), { from, until: from + 3 * H, quick: true, durLabel: "Duur" });
+  $("#reqForm").addEventListener("submit", (ev) => submitRequest(ev, rr));
+}
+function otherRequestsHtml(wins) {
   const n = now();
-  const list = st.requests.filter(r => r.until > n).sort((a, b) => a.from - b.from);
-  if (!list.length) { $("#requests").innerHTML = `<div class="empty">Er staan geen verzoeken open.</div>`; return; }
+  const list = st.requests.filter(r => r.until > n && !r.offeredSpot && r.house !== st.house).sort((a, b) => a.from - b.from);
+  if (!list.length) return `<div class="empty">Er staan geen verzoeken open.</div>`;
   const my = st.house ? spotsOf(st.house) : [];
-  $("#requests").innerHTML = list.map(r => {
-    let act = "";
-    if (r.offeredSpot) act = `<span class="pill free">Geregeld: plek van nr ${esc(r.offeredBy)}</span>`;
-    else if (r.house === st.house) act = `<div class="row"><a class="btn wa sm" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(r.from, r.until)} een parkeerplek vrij? ${r.note ? "(" + r.note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a><button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Intrekken</button></div>`;
-    else if (st.house && my.length) act = `<div class="row">${my.map(p => {
-      const busy = wins.some(w => w.spot === p && w.start < r.until && w.end > r.from);
-      return `<button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}" ${busy ? "disabled" : ""}>Bied ${my.length > 1 ? esc(spotName(p)) : "je plek"} aan</button>`; }).join("")}</div>`;
-    return `<div class="card ${r.offeredSpot ? "is-free" : ""}"><div class="head"><span class="pid">nr ${esc(r.house)}</span><span class="muted">zoekt een plek</span></div>
+  return `<div class="list">${list.map(r => {
+    const act = my.length ? `<div class="row">${my.map(p => `<button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}" ${canOffer(p, r) ? "" : "disabled"}>Bied ${my.length > 1 ? esc(spotName(p)) : "je plek"} aan</button>`).join("")}</div>` : "";
+    return `<div class="card"><div class="head"><span class="pid">nr ${esc(r.house)}</span><span class="muted">zoekt een plek</span></div>
       <div class="when">${esc(range(r.from, r.until))}</div>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}${act}</div>`;
-  }).join("");
+  }).join("")}</div>`;
+}
+function requestsListSheet() { openSheet("Buren zoeken een plek", otherRequestsHtml(windows())); }
+function myRequestsHtml() {
+  const n = now();
+  const list = st.requests.filter(r => r.house === st.house && r.until > n).sort((a, b) => a.from - b.from);
+  if (!list.length) return "";
+  return list.map(r => `<div class="card ${r.offeredSpot ? "is-free" : ""}"><div class="big">${r.offeredSpot ? `Geregeld door nr ${esc(r.offeredBy)}` : "Nog niet geregeld"}</div>
+    <div class="when">${esc(range(r.from, r.until))}</div>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}
+    <div class="row">${r.offeredSpot ? "" : `<a class="btn wa sm" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(r.from, r.until)} een parkeerplek vrij? ${r.note ? "(" + r.note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>`}
+    <button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Intrekken</button></div></div>`).join("");
+}
+// Aanbieden kan als de plek in die periode niet door een ander geclaimd is.
+function canOffer(p, r) {
+  return !liveClaims().some(c => c.spot === p && c.from < r.until && c.until > r.from);
 }
 
 /* ---------- mijn ---------- */
 function renderMine(wins) {
-  $("#houseChips").innerHTML = HOUSES.map(h => `<button type="button" class="chip" data-action="house" data-h="${h}" aria-pressed="${st.house === h}">${h}</button>`).join("");
-  $("#phonePanel").hidden = !st.house;
-  if (st.house) {
-    const rec = st.phones[st.house] || {}, me = (rec.contacts || {})[st.user.uid];
-    if (!document.activeElement?.matches?.("#phone,#cname")) { $("#phone").value = me?.phone || ""; $("#cname").value = me?.name || ""; }
-    $("#delPhone").hidden = !me;
-    const others = contactsOf(st.house).filter(c => c.uid !== st.user.uid);
-    $("#housemates").innerHTML = others.length ? `<div class="note">Ook bereikbaar voor nr ${esc(st.house)}: ${others.map(c => c.name ? esc(c.name) : `nummer zonder naam (${esc(rec.phone || "")})`).join(", ")}.</div>
-      ${others.some(c => !c.uid) ? `<div class="row"><button class="btn ghost sm" data-action="dellegacy">Nummer zonder naam verwijderen</button></div>` : ""}` : "";
-  }
+  $("#valHouse").textContent = st.house ? `${STREET} ${st.house}` : "onbekend";
   $("#accountLine").textContent = st.user ? `Ingelogd als ${st.user.email}` : "";
+  const my = st.house ? spotsOf(st.house) : [];
+  $("#valSpot").textContent = !st.house ? "" : my.length ? (my.length > 1 ? `${my.length} plekken` : "gekoppeld") : "nog niet gekoppeld";
+  if (st.house && st.spotsLoaded && !my.length && !renderMine.openedSpot) { $("#setSpot").open = true; renderMine.openedSpot = true; }
+  $("#valCharger").textContent = !my.length ? "" : my.some(hasCharger) ? "ja" : "nee";
+  $("#setCharger").hidden = !my.length;
+  const rec = st.house ? (st.phones[st.house] || {}) : {}, me = (rec.contacts || {})[st.user?.uid];
+  $("#valPhone").textContent = me ? `${me.name} · ${me.phone}` : "niet ingevuld";
+  $("#phonePanel").hidden = !st.house;
   if (!st.house) {
     $("#spotSetup").innerHTML = "";
-    $("#mine").innerHTML = `<div class="empty">Kies eerst je huisnummer.</div>`;
+    $("#mine").innerHTML = `<div class="empty">Je adres is onbekend. Vraag de beheerder om hulp.</div>`;
     return;
   }
-  if (!$("#linkMap")) {
-    $("#spotSetup").innerHTML = `<div><div class="eyebrow">Stap 2</div><h2>Welke plek is van jou?</h2></div>
-      <p class="muted small" style="margin:0">Tik op de kaart op je eigen plek. Nog een keer tikken maakt hem weer los.</p>
-      <div class="mapbox" id="linkMap"></div><div id="chargerToggles" class="flat"></div>`;
-  }
+  if (!document.activeElement?.matches?.("#phone,#cname")) { $("#phone").value = me?.phone || ""; $("#cname").value = me?.name || ""; }
+  $("#delPhone").hidden = !me;
+  const others = contactsOf(st.house).filter(c => c.uid !== st.user.uid);
+  const legacy = others.find(c => !c.uid);
+  $("#setMates").hidden = !others.length;
+  $("#labMates").textContent = `Ook op nr ${st.house}`;
+  $("#valMates").textContent = others.map(c => c.name || "nummer zonder naam").join(", ");
+  $("#housemates").innerHTML = ""
+    + (legacy && !me ? `<div class="notice"><span>Is ${esc(rec.phone)} jouw nummer? Vul je voornaam in en tik op Opslaan, dan staat het er met je naam.</span><div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="uselegacy">Ja, dit is mijn nummer</button></div></div>` : "")
+    + (legacy && me ? `<div class="row"><button class="btn ghost sm" data-action="dellegacy">Nummer zonder naam verwijderen</button></div>` : "");
+  if (!$("#linkMap")) $("#spotSetup").innerHTML = `<p class="muted small" style="margin:0">Tik op de kaart op je eigen plek. Nog een keer tikken maakt hem weer los.</p><div class="mapbox" id="linkMap"></div>`;
   renderMap(wins, "#linkMap", "link");
-  $("#chargerToggles").innerHTML = spotsOf(st.house).map(p => `<label class="toggle" for="ch_${p}"><span><strong>${esc(mineLabel(p))}</strong> heeft een openbare laadpaal die buren mogen gebruiken</span><input type="checkbox" id="ch_${p}" data-action="togglecharger" data-spot="${p}" ${hasCharger(p) ? "checked" : ""}></label>`).join("");
+  $("#chargerToggles").innerHTML = my.map(p => `<label class="toggle" for="ch_${p}"><span><strong>${esc(mineLabel(p))}</strong> heeft een openbare laadpaal die buren mogen gebruiken</span><input type="checkbox" id="ch_${p}" data-action="togglecharger" data-spot="${p}" ${hasCharger(p) ? "checked" : ""}></label>`).join("");
+
   const n = now();
   const mineW = wins.filter(w => w.house === st.house && w.end > n).slice(0, 12);
   const myClaims = liveClaims().filter(c => c.house === st.house && c.until > n).sort((a, b) => a.from - b.from);
   const recs = st.recurring.filter(r => r.house === st.house);
-  let html = `<div class="dayhead">Mijn plek vrijgegeven</div>`;
-  html += mineW.length ? mineW.map(w => {
+  const myReqs = st.requests.filter(r => r.house === st.house && r.until > n);
+  if (!mineW.length && !recs.length && !myClaims.length && !myReqs.length) {
+    $("#mine").innerHTML = `<div class="empty">Er loopt nu niets: geen vrijgave, claims of verzoeken.</div>`;
+    return;
+  }
+  let html = "";
+  if (mineW.length) html += `<div class="dayhead">${my.length > 1 ? "Jouw plekken" : "Jouw plek"}</div>` + mineW.map(w => {
     const cs = claimsIn(w);
-    return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="head"><span class="pid">${esc(mineLabel(w.spot))}</span>${w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}
-      ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} ${hm(c.from)}-${hm(c.until)}</span>`).join("")}${cs.length ? "" : `<span class="pill free">nog niet geclaimd</span>`}</div>
-      <div class="when">${esc(range(w.start, w.end))}</div>
-      <div class="row"><button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > n ? "Wijzigen of intrekken" : "Ik kom eerder terug"}</button></div></div>`;
-  }).join("") : `<div class="empty">Je plek staat nu niet vrijgegeven. <button class="btn sm ghost" data-action="goto" data-tab="vrijgeven">Vrijgeven</button></div>`;
+    return `<div class="card ${cs.length ? "is-claimed" : "is-free"}">
+      <div class="big">${w.start > n ? `Vrij ${esc(range(w.start, w.end))}` : `Vrij tot ${esc(when(w.end))}`}</div>
+      <div class="row" style="gap:6px">${my.length > 1 ? `<span class="pill neutral">${esc(mineLabel(w.spot))}</span>` : ""}${w.src === "rec" ? `<span class="pill neutral">wekelijks</span>` : ""}
+      ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} · ${esc(range(c.from, c.until))}</span>`).join("")}${cs.length ? "" : `<span class="pill free">nog niet geclaimd</span>`}</div>
+      <div class="row"><button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">Aanpassen</button>${calBtn(calForRelease(w.spot, w.start, w.end))}</div></div>`;
+  }).join("");
   if (recs.length) {
     html += `<div class="dayhead">Wekelijks</div>` + recs.map(r => `<div class="card"><div class="head"><span class="pid">${esc(mineLabel(r.spot))}</span><span class="pill neutral">wekelijks</span></div>
       <div class="when">${DAYS.filter(([d]) => (r.days || []).includes(d)).map(([, l]) => l).join(" ")} · ${esc(r.fromTime)} tot ${esc(r.untilTime)}</div>
       <div class="row"><button class="btn danger sm" data-action="stoprec" data-ref="${r.id}">Stop herhaling</button></div></div>`).join("");
   }
-  html += `<div class="dayhead">Mijn claims</div>`;
-  html += myClaims.length ? myClaims.map(c => `<div class="card is-claimed"><div class="head"><span class="pid">${esc(spotNr(c.spot))}</span></div>
+  if (myClaims.length) html += `<div class="dayhead">${myClaims.length > 1 ? "Jouw claims" : "Jouw claim"}</div>` + myClaims.map(c => `<div class="card is-claimed"><div class="big">Plek van ${esc(spotNr(c.spot))}</div>
     <div class="when">${esc(range(c.from, c.until))}</div>
-    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Claim intrekken"}</button>${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("") : `<div class="empty">Je hebt geen plek van een buur geclaimd.</div>`;
+    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Intrekken"}</button>${calBtn(calForClaim(c))}${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("");
+  if (myReqs.length) html += `<div class="dayhead">${myReqs.length > 1 ? "Jouw verzoeken" : "Jouw verzoek"}</div>` + myRequestsHtml();
   $("#mine").innerHTML = html;
 }
 
 function render() {
   if (!st.member) return;
   const wins = windows();
-  renderBanner(); renderNotices(); renderMoment(); renderMap(wins); renderOptions(wins);
-  renderRelForm(); renderRequests(wins); renderMine(wins);
+  renderBanner(); renderNotices(wins); renderMoment(); renderMap(wins); renderOptions(wins);
+  renderMine(wins);
+  $("#accountId").textContent = st.user ? st.user.uid : "";
+  if (st.ob && ["spot", "housemate"].includes(st.ob.steps[st.ob.i])) renderOnboard(); else maybeOnboard();
+  renderAdmin();
+}
+
+/* ---------- rondleiding ---------- */
+// Eerste bewoner van een adres: plek koppelen (verplicht), laadpaal, WhatsApp (optioneel).
+// Huisgenoot van een gekoppeld adres: welkom met de plek op de kaart, WhatsApp (optioneel).
+// Bestaand lid zonder nummer: alleen één keer de WhatsApp-uitleg.
+const TWO_SPOTS = { "27": 2 };
+function myContact() { return ((st.phones[st.house] || {}).contacts || {})[st.user.uid]; }
+function maybeOnboard() {
+  if (!st.member || st.ob || !st.house || !st.spotsLoaded || !st.phonesLoaded) return;
+  const hasSpot = spotsOf(st.house).length > 0;
+  const needWa = !st.member.waAsked && !myContact();
+  let steps;
+  // Wie al langer lid is (van voor de rondleiding) en een plek heeft, krijgt geen welkom als huisgenoot.
+  const fresh = (st.member.createdAt || 0) > now() - 2 * D;
+  if (!st.member.onboarded) steps = !hasSpot ? ["spot", "charger", "wa"] : fresh ? ["housemate", "wa"] : ["wa"];
+  else if (needWa) steps = ["wa"];
+  else return;
+  if (!needWa) steps = steps.filter(x => x !== "wa");
+  if (!steps.length) { saveMember({ onboarded: true }); return; }
+  st.ob = { steps, i: 0 };
+  renderOnboard();
+}
+async function saveMember(fields) {
+  Object.assign(st.member, fields);
+  try { await updateDoc(doc(fs, "members", st.user.uid), fields); } catch (e) { console.warn(e); }
+}
+function renderOnboard() {
+  const ob = st.ob; if (!ob) return;
+  const step = ob.steps[ob.i], my = spotsOf(st.house);
+  const dots = ob.steps.length > 1 ? `<div class="obsteps" aria-label="Stap ${ob.i + 1} van ${ob.steps.length}">${ob.steps.map((_, i) => `<i class="${i <= ob.i ? "on" : ""}"></i>`).join("")}</div>` : "";
+  const title = step === "wa" && ob.steps.length === 1 ? "Bereikbaar via WhatsApp?" : "Welkom bij Parkeren Jutfasehof";
+  let body = "";
+  if (step === "spot") {
+    const need = TWO_SPOTS[st.house] || 1;
+    body = `${dots}<p style="margin:0">Tik op de kaart op je eigen parkeerplek.${need > 1 ? ` Je woning heeft ${need} plekken: tik ze allebei aan.` : ""}</p>
+      <div class="mapbox" id="obMap"></div>
+      <button class="btn block" data-action="obnext" ${my.length ? "" : "disabled"}>${my.length ? "Volgende" : "Tik eerst je plek aan"}</button>`;
+  } else if (step === "housemate") {
+    body = `${dots}<p style="margin:0">Welkom! ${my.length > 1 ? "De plekken" : "De plek"} van nr ${esc(st.house)} ${my.length > 1 ? "zijn" : "is"} al gekoppeld door een huisgenoot. Op de kaart zie je welke.</p>
+      <div class="mapbox" id="obMap"></div>
+      <button class="btn block" data-action="obnext">Volgende</button>`;
+  } else if (step === "charger") {
+    body = `${dots}<p style="margin:0">Heeft je plek een <strong>openbare laadpaal</strong> die buren mogen gebruiken?</p>
+      <div class="row"><button class="btn" data-action="obcharger" data-v="1">Ja</button><button class="btn ghost" data-action="obcharger" data-v="0">Nee</button></div>`;
+  } else {
+    body = `${dots}<p style="margin:0"><strong>Wil je bereikbaar zijn via WhatsApp?</strong></p>
+      <p class="muted" style="margin:0">Buren kunnen je dan met één tik een bericht sturen, bijvoorbeeld als ze je plek gebruiken of als jij eerder terugkomt. Alleen bewoners in deze app zien je naam en nummer. Woon je met meer mensen, dan vult ieder zijn eigen nummer in. Je kunt het later altijd aanpassen bij Instellingen.</p>
+      <div class="two">
+        <div class="field"><label for="obName">Voornaam</label><input type="text" id="obName" maxlength="30" autocomplete="given-name"></div>
+        <div class="field"><label for="obPhone">Mobiel nummer</label><input type="tel" id="obPhone" inputmode="tel" autocomplete="tel" placeholder="06 12345678"></div>
+      </div>
+      <div class="err" id="obErr" hidden></div>
+      <div class="row"><button class="btn" data-action="obphone">Opslaan</button><button class="btn ghost" data-action="obskipwa">Liever niet</button></div>`;
+  }
+  if (!st.sheet || !$("#sheetRoot .obsheet")) { openSheet(title, body); $("#sheetRoot .sheet").classList.add("obsheet"); } else sheetBody(body);
+  if (step === "spot") renderMap(windows(), "#obMap", "link");
+  if (step === "housemate") renderMap(windows(), "#obMap", "show");
+}
+function obNext() {
+  const ob = st.ob; if (!ob) return;
+  if (ob.steps[ob.i] === "spot" && !spotsOf(st.house).length) return;
+  ob.i++;
+  if (ob.i >= ob.steps.length) return obFinish();
+  renderOnboard();
+}
+async function obCharger(on) {
+  for (const p of spotsOf(st.house)) await setCharger(p, on, true);
+  obNext();
+}
+async function obPhone() {
+  const err = $("#obErr"), name = $("#obName").value.trim().slice(0, 30), v = $("#obPhone").value.trim();
+  if (!name) return showErr(err, "Vul je voornaam in, of tik op Liever niet.");
+  if (!normPhone(v)) return showErr(err, "Dit lijkt geen geldig mobiel nummer. Bijvoorbeeld: 06 12345678.");
+  if (await guard(() => setDoc(doc(fs, "houses", st.house), { contacts: { [st.user.uid]: { name, phone: v, updatedAt: now() } }, updatedAt: now() }, { merge: true }))) { st.ob.waDone = true; obNext(); }
+}
+function obSkipWa() { st.ob.waDone = true; obNext(); }
+// Afronden; ook bij wegklikken. De plek-stap telt alleen als er echt een plek gekoppeld is.
+function obFinish() {
+  const ob = st.ob; if (!ob) return;
+  st.ob = null;
+  const fields = {};
+  if (spotsOf(st.house).length) fields.onboarded = true;
+  if (ob.waDone || ob.steps.includes("wa") && ob.i >= ob.steps.indexOf("wa")) fields.waAsked = true;
+  if (Object.keys(fields).length) saveMember(fields);
+  closeSheet();
+  if (fields.onboarded && ob.i >= ob.steps.length) toast("Klaar! Je kunt nu je plek vrijgeven of om een plek vragen.");
+}
+
+/* ---------- beheer (alleen voor beheerders) ---------- */
+// Wie in Firestore onder private/admins staat, mag alle leden zien. Dat proberen we stil; lukt het niet, dan geen beheer.
+async function checkAdmin() {
+  try { const snap = await getDocs(collection(fs, "members")); st.isAdmin = true; st.membersList = snap.docs.map(d => ({ id: d.id, ...d.data() })); }
+  catch { st.isAdmin = false; st.membersList = []; }
+  $("#adminPanel").hidden = !st.isAdmin;
+  if (st.isAdmin) $("#valMembers").textContent = st.membersList.length;
+  if (st.isAdmin) { renderAdmin(); autoCleanup(); }
+}
+function renderAdmin() {
+  if (!st.isAdmin) return;
+  const ms = (st.membersList || []).slice().sort((a, b) => (a.house || "").localeCompare(b.house || "", "nl", { numeric: true }));
+  $("#adminMembers").innerHTML = ms.length ? ms.map(m => `<div class="adminrow"><span><select class="housesel" data-action="adminhouse" data-id="${m.id}" aria-label="Adres van ${esc(m.email || "lid")}">${HOUSES.map(h => `<option value="${h}" ${h === m.house ? "selected" : ""}>nr ${h}</option>`).join("")}</select> ${esc(m.email || "")}</span>
+      ${m.id === st.user.uid ? `<span class="pill neutral">jij</span>` : `<button class="btn danger sm" data-action="admindel" data-id="${m.id}">Toegang intrekken</button>`}</div>`).join("") : `<div class="empty">Nog geen leden.</div>`;
+  const linked = SPOTS.filter(p => ownerOf(p));
+  $("#adminSpots").innerHTML = linked.length ? linked.map(p => `<div class="adminrow"><span>Plek ${esc(spotName(p))}${hasCharger(p) ? " · laadpaal" : ""}</span>
+      <button class="btn ghost sm" data-action="adminunlink" data-spot="${p}">Loskoppelen</button></div>`).join("") : `<div class="empty">Nog geen plekken gekoppeld.</div>`;
+}
+const armed = new Set();
+function confirmTap(key, el, label) {
+  if (armed.has(key)) { armed.delete(key); return true; }
+  armed.add(key); el.textContent = label; setTimeout(() => armed.delete(key), 4000);
+  return false;
+}
+async function adminDelete(id, el) {
+  if (!confirmTap("del" + id, el, "Tik nog eens om te bevestigen")) return;
+  if (await guard(() => deleteDoc(doc(fs, "members", id)))) { toast("Toegang ingetrokken."); checkAdmin(); }
+}
+async function adminHouse(id, h) {
+  if (!HOUSES.includes(h)) return;
+  if (await guard(() => updateDoc(doc(fs, "members", id), { house: h }))) {
+    toast(`Adres aangepast naar ${STREET} ${h}.`);
+    if (id === st.user.uid) { st.house = h; render(); }
+    checkAdmin();
+  }
+}
+async function adminUnlink(p, el) {
+  if (!confirmTap("unl" + p, el, "Tik nog eens")) return;
+  if (await guard(() => setDoc(doc(fs, "spots", p), { house: null, charger: false, updatedAt: now() }))) toast("Plek losgekoppeld.");
+}
+async function backup() {
+  const names = ["members", "spots", "houses", "releases", "recurring", "claims", "requests"];
+  const out = { app: APP, exportedAt: new Date().toISOString(), collections: {} };
+  const ok = await guard(async () => {
+    for (const n of names) { const snap = await getDocs(collection(fs, n)); out.collections[n] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()])); }
+  });
+  if (!ok) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a"); a.href = url; a.download = `parkeren-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast("Back-up gedownload.");
+}
+// Ruimt vrijgaven, verzoeken en claims op die langer dan KEEP_DAYS dagen voorbij zijn.
+async function cleanup(silent) {
+  const cut = now() - KEEP_DAYS * D;
+  let n = 0;
+  const ok = await guard(async () => {
+    for (const col of ["releases", "requests"]) {
+      const snap = await getDocs(query(collection(fs, col), where("until", "<", cut)));
+      for (const d of snap.docs) { await deleteDoc(d.ref); n++; }
+    }
+    const cs = await getDocs(collection(fs, "claims"));
+    for (const d of cs.docs) {
+      const old = (d.data().items || []).filter(c => (c.until || 0) < cut && !(c.earlyReturn > cut)).length;
+      if (old) { await mutateClaims(d.id, () => {}); n += old; }
+    }
+  });
+  try { localStorage.setItem("pz_cleanup", String(now())); } catch {}
+  if (ok && !silent) toast(n ? `${n} oude ${n === 1 ? "item" : "items"} opgeruimd.` : "Er was niets op te ruimen.");
+}
+function autoCleanup() {
+  let last = 0; try { last = Number(localStorage.getItem("pz_cleanup")) || 0; } catch {}
+  if (now() - last > 7 * D) cleanup(true);
 }
 
 /* ---------- uitschuifpaneel ---------- */
@@ -363,7 +876,10 @@ function openSheet(title, body) {
   document.body.style.overflow = "hidden";
 }
 function sheetBody(html) { const b = $("#sheetBody"); if (b) b.innerHTML = html; }
-function closeSheet() { st.sheet = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = ""; }
+function closeSheet() {
+  if (st.ob) { obFinish(); return; }
+  st.sheet = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = "";
+}
 
 function spotSheet(p) {
   const wins = windows(), t = T(), s = statusAt(p, t, wins), own = ownerOf(p);
@@ -372,17 +888,17 @@ function spotSheet(p) {
   const mine = st.house && own === st.house;
   openSheet(own ? `Plek van nr ${spotName(p)}` : "Plek zonder adres", `<div class="row"><span class="muted">${own ? `${STREET} ${esc(own)}` : "Nog niet aan een woning gekoppeld"}</span>${head}${hasCharger(p) ? boltPill : ""}</div>
     ${!own && st.house ? `<button class="btn block" data-action="linkspot" data-spot="${p}">Dit is mijn plek</button>` : ""}
-    ${s.cls === "free" && !mine && st.house ? `<button class="btn green block" data-action="claimsheet" data-key="${s.w.key}">Claim deze plek</button>` : ""}
-    <div class="dayhead">Gepland vrij</div>
+    ${mine ? `<button class="btn block" data-action="releasesheet" data-spot="${p}">${clockIcon}Plek vrijgeven</button>` : ""}
+    <div class="dayhead">Wanneer vrij</div>
     ${up.length ? `<div class="list">${up.map(w => { const cs = claimsIn(w);
       return `<div class="card ${cs.length ? "is-claimed" : "is-free"}"><div class="when">${esc(range(w.start, w.end))}</div>
       ${cs.map(c => `<span class="pill claimed">nr ${esc(c.house)} ${esc(range(c.from, c.until))}</span>`).join(" ")}
       ${w.note ? `<div class="note">${esc(w.note)}</div>` : ""}
-      ${mine ? `<button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">${w.start > now() ? "Wijzigen of intrekken" : "Ik kom eerder terug"}</button>` : ""}
-      ${!mine && st.house ? `<button class="btn green sm" data-action="claimsheet" data-key="${w.key}">Claim in deze periode</button>` : ""}</div>`; }).join("")}</div>`
-      : `<div class="empty">Geen vrijgaven gepland.</div>`}
-    ${mine ? `<button class="btn block" data-action="gotorel" data-spot="${p}">Plek vrijgeven</button>` : ""}`);
+      ${mine ? `<button class="btn ghost sm" data-action="earlysheet" data-key="${w.key}">Aanpassen</button>` : ""}
+      ${!mine && st.house && hasFreeTime(w) ? `<button class="btn green sm" data-action="claimsheet" data-key="${w.key}">Claim</button>` : ""}</div>`; }).join("")}</div>`
+      : `<div class="empty">Geen vrijgaven gepland.</div>`}`);
 }
+let claimRange = null;
 function claimSheet(key) {
   const w = windows().find(x => x.key === key); if (!w) return;
   const t = Math.max(T(), now());
@@ -394,22 +910,29 @@ function claimSheet(key) {
     <div class="muted">Vrijgegeven ${esc(range(w.start, w.end))}</div>
     ${hasCharger(w.spot) ? `<div>${boltPill}</div>` : ""}
     ${cs.length ? `<div class="note">Al geclaimd: ${cs.map(c => `nr ${esc(c.house)} ${esc(range(c.from, c.until))}`).join(", ")}</div>` : ""}
-    <div class="field"><label for="cFrom">Ik sta er vanaf</label><input type="datetime-local" id="cFrom" step="300" value="${toInput(from)}"></div>
-    <div class="field"><label for="cUntil">Tot</label><input type="datetime-local" id="cUntil" step="300" value="${toInput(until)}"></div>
+    <div id="claimRange"></div>
     <div class="err" id="cErr" hidden></div>
     <button class="btn green block" data-action="claim" data-key="${key}">Claim deze plek</button>`);
+  claimRange = rangeField($("#claimRange"), { from, until, minFrom: () => Math.max(w.start, floorQ(now())), maxUntil: () => w.end, durLabel: "Duur" });
 }
+let earlyTF = null, earlyVal = 0;
+// Eén paneel om je vrijgave aan te passen: eindtijd korter of langer, of stoppen.
 function earlySheet(key) {
   const w = windows().find(x => x.key === key); if (!w) return;
   const future = w.start > now();
   const cs = claimsIn(w);
-  openSheet(future ? `${mineLabel(w.spot)} wijzigen` : "Eerder terug", `
-    <div class="when">${esc(range(w.start, w.end))}</div>
+  earlyVal = w.end;
+  openSheet(`${mineLabel(w.spot)}: vrijgave aanpassen`, `
+    <div class="when">Vrijgegeven ${esc(range(w.start, w.end))}</div>
     ${cs.length ? `<div class="notice amber"><span>Geclaimd door ${cs.map(c => `nr ${esc(c.house)} (${esc(range(c.from, c.until))})`).join(", ")}. Zij zien je wijziging bovenaan in de app.</span></div>` : ""}
-    <div class="field"><label for="eTime">${future ? "Vrij tot" : "Ik ben terug om"}</label><input type="datetime-local" id="eTime" step="300" value="${toInput(future ? w.end : Math.min(w.end, round5(now() + 30 * MIN)))}"></div>
+    <div id="earlyTF"></div>
+    ${w.src === "once" ? `<p class="muted small" style="margin:0">Je kunt de eindtijd eerder of later zetten.</p>` : `<p class="muted small" style="margin:0">Dit geldt alleen voor deze keer. De wekelijkse herhaling stop je bij Activiteit, onder Van jou.</p>`}
+    <div class="err" id="eErr" hidden></div>
     <button class="btn block" data-action="early" data-key="${key}">Opslaan</button>
-    <button class="btn danger block" data-action="cancelwin" data-key="${key}">${future ? "Helemaal niet vrijgeven" : "Ik ben er nu al"}</button>
-    ${w.src === "rec" ? `<p class="muted small" style="margin:0">Dit geldt alleen voor deze keer. De wekelijkse herhaling stop je bij Mijn.</p>` : ""}`);
+    <button class="btn danger block" data-action="cancelwin" data-key="${key}">${future ? "Toch niet vrijgeven" : "Stoppen, ik ben er nu"}</button>`);
+  const maxEnd = w.src === "once" ? w.start + 31 * D : w.end;
+  earlyTF = timeField($("#earlyTF"), { label: "Vrij tot", get: () => earlyVal, set: (v) => { earlyVal = v; }, min: () => Math.max(w.start, floorQ(now())), max: () => maxEnd });
+  $("#earlyTF .tfbtn").click();
 }
 
 /* ---------- schrijven ---------- */
@@ -436,9 +959,6 @@ async function mutateClaims(spot, fn) {
     return res;
   });
 }
-async function setHouse(h) {
-  if (await guard(() => updateDoc(doc(fs, "members", st.user.uid), { house: h }))) { st.house = h; render(); }
-}
 async function linkSpot(p) {
   const o = ownerOf(p);
   await guard(async () => {
@@ -446,28 +966,38 @@ async function linkSpot(p) {
     else if (!o) await setDoc(doc(fs, "spots", p), { house: st.house, charger: hasCharger(p), updatedAt: now() });
   });
 }
-async function setCharger(p, on) {
+async function setCharger(p, on, quiet) {
   if (ownerOf(p) !== st.house) return;
-  if (await guard(() => setDoc(doc(fs, "spots", p), { house: st.house, charger: !!on, updatedAt: now() })))
+  if (await guard(() => setDoc(doc(fs, "spots", p), { house: st.house, charger: !!on, updatedAt: now() })) && !quiet)
     toast(on ? "De laadpaal staat nu op de kaart." : "Laadpaal verwijderd.");
 }
 async function savePhone(del) {
+  const err = $("#phoneErr"); showErr(err, "");
   const ref = doc(fs, "houses", st.house);
   if (del) {
     if (await guard(() => updateDoc(ref, new FieldPath("contacts", st.user.uid), deleteField()))) toast("Je nummer is verwijderd.");
     return;
   }
   const name = $("#cname").value.trim().slice(0, 30), v = $("#phone").value.trim();
-  if (!name) { toast("Vul je voornaam in."); return; }
-  if (!normPhone(v)) { toast("Dat lijkt geen geldig mobiel nummer."); return; }
-  if (await guard(() => setDoc(ref, { contacts: { [st.user.uid]: { name, phone: v, updatedAt: now() } }, updatedAt: now() }, { merge: true }))) toast("Opgeslagen.");
+  if (!name && !v) return showErr(err, "Vul je voornaam en mobiele nummer in.");
+  if (!name) return showErr(err, "Vul ook je voornaam in.");
+  if (!v) return showErr(err, "Vul ook je mobiele nummer in. Zonder nummer kunnen buren je niet appen.");
+  if (!normPhone(v)) return showErr(err, "Dit lijkt geen geldig mobiel nummer. Bijvoorbeeld: 06 12345678.");
+  if (await guard(() => setDoc(ref, { contacts: { [st.user.uid]: { name, phone: v, updatedAt: now() } }, updatedAt: now() }, { merge: true }))) toast(`Opgeslagen: ${name}, ${v}.`);
 }
 async function delLegacy() {
   if (await guard(() => updateDoc(doc(fs, "houses", st.house), { phone: deleteField() }))) toast("Nummer zonder naam verwijderd.");
 }
+function useLegacy() {
+  const rec = st.phones[st.house] || {};
+  $("#phone").value = rec.phone || "";
+  $("#cname").focus();
+  showErr($("#phoneErr"), "Vul je voornaam in en tik op Opslaan.");
+}
 function linkTap(p) {
   const o = ownerOf(p);
   if (!o) { linkSpot(p); return; }
+  if (o === st.house && st.ob) { linkSpot(p); return; } // tijdens de rondleiding gewoon loskoppelen, zonder extra paneel
   if (o === st.house) {
     openSheet("Plek loskoppelen?", `<p style="margin:0">Deze plek hoort nu bij nr ${esc(st.house)}. Wil je hem loskoppelen?</p>
       <button class="btn danger block" data-action="unlinkspot" data-spot="${p}">Loskoppelen</button>
@@ -476,58 +1006,51 @@ function linkTap(p) {
   }
   toast(`Deze plek hoort bij nr ${o}. Klopt dat niet? Vraag nr ${o} om hem los te koppelen.`);
 }
-async function submitRelease(ev) {
-  ev.preventDefault();
-  const err = $("#relErr"); err.hidden = true;
-  const fail = (m) => { err.textContent = m; err.hidden = false; };
-  const spots = [...st.relSpots];
+// Eenmalige vrijgave opslaan; overlapt of sluit aan op een eerdere vrijgave van dezelfde plek: samenvoegen.
+async function upsertRelease(p, from, until, note) {
+  const touch = st.releases.filter(r => r.spot === p && r.until > r.from && r.from <= until && r.until >= from).sort((a, b) => a.from - b.from);
+  let f = from, u = until;
+  for (const r of touch) { f = Math.min(f, r.from); u = Math.max(u, r.until); }
+  if (touch.length) {
+    const [keep, ...rest] = touch;
+    await updateDoc(doc(fs, "releases", keep.id), { from: f, until: u, note: note || keep.note || "" });
+    for (const r of rest) await deleteDoc(doc(fs, "releases", r.id));
+  } else {
+    await addDoc(collection(fs, "releases"), { spot: p, house: st.house, from, until, note, createdAt: now() });
+  }
+  return { f, u, merged: touch.length > 0 };
+}
+async function submitRelease({ spots, mode, range: r, days, ft, ut, note }, fail) {
   if (!spots.length) return fail("Kies welke plek je vrijgeeft.");
-  const note = $("#relNote").value.trim().slice(0, 140);
-  if (st.relMode === "once") {
-    const from = fromInput($("#relFrom").value), until = fromInput($("#relUntil").value);
-    if (isNaN(from) || isNaN(until)) return fail("Vul een begin- en eindtijd in.");
+  if (mode === "once") {
+    const from = r.fromNow ? now() : r.from, until = r.until;
     if (until <= from) return fail("De eindtijd moet na de begintijd liggen.");
     if (until <= now()) return fail("Deze periode ligt al in het verleden.");
     if (until - from > 31 * D) return fail("Geef je plek voor maximaal een maand tegelijk vrij.");
-    // Overlapt of sluit aan op een eerdere eenmalige vrijgave van dezelfde plek: samenvoegen tot één periode.
-    let merged = false, mf = from, mu = until;
-    const ok = await guard(async () => {
-      for (const p of spots) {
-        const touch = st.releases.filter(r => r.spot === p && r.until > r.from && r.from <= until && r.until >= from).sort((a, b) => a.from - b.from);
-        let f = from, u = until;
-        for (const r of touch) { f = Math.min(f, r.from); u = Math.max(u, r.until); }
-        if (touch.length) {
-          merged = true;
-          const [keep, ...rest] = touch;
-          await updateDoc(doc(fs, "releases", keep.id), { from: f, until: u, note: note || keep.note || "" });
-          for (const r of rest) await deleteDoc(doc(fs, "releases", r.id));
-        } else {
-          await addDoc(collection(fs, "releases"), { spot: p, house: st.house, from, until, note, createdAt: now() });
-        }
-        mf = f; mu = u;
-      }
-    });
-    if (ok) { $("#relNote").value = ""; afterRelease(`${spots.map(mineLabel).join(" en ")} is ${merged ? "nu " : ""}vrij ${range(mf, mu)}`, `vrij ${range(mf, mu)}`, merged); }
+    let res = null;
+    const ok = await guard(async () => { for (const p of spots) res = await upsertRelease(p, from, until, note); });
+    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${res.merged ? "nu " : ""}vrij ${range(res.f, res.u)}`, `vrij ${range(res.f, res.u)}`, res.merged, calForRelease(spots[0], res.f, res.u));
   } else {
-    const days = [...st.recDays], ft = $("#recFrom").value, ut = $("#recUntil").value;
     if (!days.length) return fail("Kies minstens één dag.");
     if (!ft || !ut || ft === ut) return fail("Vul een begin- en eindtijd in die verschillen.");
     const ok = await guard(async () => { for (const p of spots) await addDoc(collection(fs, "recurring"), { spot: p, house: st.house, days, fromTime: ft, untilTime: ut, note, since: sod(now()), overrides: {}, createdAt: now() }); });
-    if (ok) { const dd = `elke ${DAYS.filter(([d]) => days.includes(d)).map(([, l]) => l).join(", ")} vrij van ${ft} tot ${ut}`; $("#relNote").value = ""; afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, dd); }
+    const dd = `elke ${DAYS.filter(([d]) => days.includes(d)).map(([, l]) => l).join(", ")} vrij van ${ft} tot ${ut}`;
+    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, dd);
   }
 }
-function afterRelease(txt, shareTxt, merged) {
-  setTab("overzicht");
+function afterRelease(txt, shareTxt, merged, cal) {
+  setTab("kaart");
   openSheet("Vrijgegeven", `<div class="notice green"><span>${esc(txt)}.${merged ? " Samengevoegd met je eerdere vrijgave." : ""}</span></div>
     <p class="muted" style="margin:0">Wil je het de buren laten weten?</p>
     <a class="btn wa block" href="${esc(waShare(`Hoi buren! De parkeerplek van ${STREET} ${st.house} is ${shareTxt}. Claimen kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
+    ${cal ? calBtn(cal, "btn ghost block") : ""}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
+  render();
 }
 async function claim(key) {
-  const w = windows().find(x => x.key === key); if (!w) return;
-  const err = $("#cErr"); const fail = (m) => { err.textContent = m; err.hidden = false; };
-  const from = fromInput($("#cFrom").value), until = fromInput($("#cUntil").value);
-  if (isNaN(from) || isNaN(until)) return fail("Vul beide tijden in.");
+  const w = windows().find(x => x.key === key); if (!w || !claimRange) return;
+  const err = $("#cErr"); const fail = (m) => showErr(err, m);
+  const { from, until } = claimRange.get();
   if (until <= from) return fail("De eindtijd moet na de begintijd liggen.");
   if (from < w.start - MIN || until > w.end + MIN) return fail(`Kies een tijd binnen ${range(w.start, w.end)}.`);
   if (until <= now()) return fail("Deze tijd ligt al in het verleden.");
@@ -535,31 +1058,40 @@ async function claim(key) {
   try {
     await mutateClaims(w.spot, (items) => {
       const clash = items.find(c => c.house && c.until > c.from && c.from < u && c.until > f);
-      if (clash) throw new UserError(`Nr ${clash.house} heeft hem al ${range(clash.from, clash.until)}.`);
+      if (clash) throw new UserError(`Nr ${clash.house} heeft deze plek al ${range(clash.from, clash.until)}. Kies een andere tijd.`);
       items.push({ id: rid(), owner: w.house, windowStart: w.start, windowEnd: w.end, house: st.house, from: f, until: u, earlyReturn: null, createdAt: now() });
     });
-  } catch (e) { console.warn(e); return fail(e instanceof UserError ? e.message : "Claimen lukte niet. Probeer het zo nog eens."); }
+  } catch (e) { console.warn(e); return fail(e instanceof UserError ? e.message : "Claimen lukte niet. Controleer je verbinding en probeer het opnieuw."); }
   const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
   const btns = waBtns(w.house, msg);
   sheetBody(`<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
-    ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : ""}
+    ${calBtn(calForClaim({ spot: w.spot, until: u }), "btn ghost block")}
+    ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : `<p class="muted" style="margin:0">Nr ${esc(w.house)} heeft geen WhatsApp-nummer ingevuld, maar ziet je claim in de app.</p>`}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function unclaim(id, spot) {
-  await guard(() => mutateClaims(spot, (items) => {
+  if (await guard(() => mutateClaims(spot, (items) => {
     const i = items.findIndex(c => c.id === id); if (i < 0) return;
     const c = items[i];
     if (c.earlyReturn || c.from > now()) items.splice(i, 1);
     else c.until = Math.max(c.from, now());
-  }));
-  toast("De plek is weer vrij.");
+  }))) toast("De plek is weer vrij.");
 }
 async function ack(id, spot) {
   await guard(() => mutateClaims(spot, (items) => { const c = items.find(c => c.id === id); if (c) c.earlyReturn = null; }));
 }
 async function changeEnd(key, t) {
   const w = windows().find(x => x.key === key); if (!w) return;
-  if (isNaN(t)) { toast("Kies een tijd."); return; }
+  if (isNaN(t)) return showErr($("#eErr"), "Kies een tijd.");
+  // Langer vrijgeven (alleen eenmalig): samenvoegen met wat er al is.
+  if (w.src === "once" && t > w.end) {
+    let res = null;
+    if (await guard(async () => { res = await upsertRelease(w.spot, w.start, Math.min(t, w.start + 31 * D), w.note); }))
+      sheetBody(`<div class="notice green"><span>${esc(mineLabel(w.spot))} is nu vrij ${esc(range(res.f, res.u))}.</span></div>
+        ${calBtn(calForRelease(w.spot, res.f, res.u), "btn ghost block")}
+        <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
+    return;
+  }
   const end = Math.max(w.start, Math.min(t, w.end));
   const hit = claimsIn(w).filter(c => c.until > end);
   const ok = await guard(async () => {
@@ -576,18 +1108,15 @@ async function changeEnd(key, t) {
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function stopRec(id) { if (await guard(() => deleteDoc(doc(fs, "recurring", id)))) toast("Herhaling gestopt."); }
-async function submitRequest(ev) {
+async function submitRequest(ev, rr) {
   ev.preventDefault();
-  const err = $("#reqErr"); err.hidden = true;
-  const fail = (m) => { err.textContent = m; err.hidden = false; };
-  if (!st.house) return fail("Kies eerst je huisnummer bij Mijn.");
-  const from = fromInput($("#reqFrom").value), until = fromInput($("#reqUntil").value);
-  if (isNaN(from) || isNaN(until)) return fail("Vul een begin- en eindtijd in.");
+  const err = $("#reqErr"); const fail = (m) => showErr(err, m); fail("");
+  if (!st.house) return fail("Je adres is onbekend. Vraag de beheerder om hulp.");
+  const { from, until } = rr.get();
   if (until <= from) return fail("De eindtijd moet na de begintijd liggen.");
   if (until <= now()) return fail("Deze periode ligt al in het verleden.");
   const note = $("#reqNote").value.trim().slice(0, 140);
   if (await guard(() => addDoc(collection(fs, "requests"), { house: st.house, from, until, note, offeredBy: null, offeredSpot: null, createdAt: now() }))) {
-    $("#reqNote").value = "";
     openSheet("Verzoek geplaatst", `<p style="margin:0">Buren zien je verzoek in de app. Deel het ook in de buurtgroep, dan ziet iedereen het sneller.</p>
       <a class="btn wa block" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(from, until)} een parkeerplek vrij? ${note ? "(" + note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
       <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
@@ -595,26 +1124,35 @@ async function submitRequest(ev) {
 }
 async function offer(id, p) {
   const r = st.requests.find(x => x.id === id); if (!r) return;
+  const from = Math.max(r.from, floorQ(now())), until = r.until;
+  const wins = windows();
   const ok = await guard(async () => {
-    await addDoc(collection(fs, "releases"), { spot: p, house: st.house, from: r.from, until: r.until, note: `Voor nr ${r.house}`, createdAt: now() });
-    await mutateClaims(p, (items) => { items.push({ id: rid(), owner: st.house, windowStart: r.from, windowEnd: r.until, house: r.house, from: r.from, until: r.until, earlyReturn: null, createdAt: now() }); });
+    // Staat de plek al vrij in die periode, dan alleen de claim; anders eerst vrijgeven (samengevoegd met wat er al is).
+    if (!wins.some(w => w.spot === p && w.start <= from && w.end >= until)) await upsertRelease(p, from, until, `Voor nr ${r.house}`);
+    await mutateClaims(p, (items) => {
+      const clash = items.find(c => c.house && c.until > c.from && c.from < until && c.until > from);
+      if (clash) throw new UserError(`Nr ${clash.house} heeft je plek in die periode al geclaimd.`);
+      items.push({ id: rid(), owner: st.house, windowStart: from, windowEnd: until, house: r.house, from, until, earlyReturn: null, createdAt: now() });
+    });
     await updateDoc(doc(fs, "requests", id), { offeredBy: st.house, offeredSpot: p });
   });
-  if (ok) openSheet("Aangeboden", `<div class="notice green"><span>Je plek staat klaar voor nr ${esc(r.house)}, ${esc(range(r.from, r.until))}.</span></div>
-    ${waBtns(r.house, `Hoi! Je kunt ${range(r.from, r.until)} op mijn parkeerplek staan. Groet, ${STREET} ${st.house}`)}
+  if (ok) openSheet("Aangeboden", `<div class="notice green"><span>Je plek staat klaar voor nr ${esc(r.house)}, ${esc(range(from, until))}.</span></div>
+    ${waBtns(r.house, `Hoi! Je kunt ${range(from, until)} op mijn parkeerplek staan. Groet, ${STREET} ${st.house}`)}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
+async function ackOffer(id) { await guard(() => updateDoc(doc(fs, "requests", id), { ackOffered: true })); }
 async function delReq(id) { if (await guard(() => deleteDoc(doc(fs, "requests", id)))) toast("Verzoek ingetrokken."); }
 
 /* ---------- tabs ---------- */
-const TABS = ["overzicht", "vrijgeven", "verzoeken", "mijn", "info"];
+const TABS = ["kaart", "activiteit", "instellingen"];
 function setTab(t) {
-  if (!TABS.includes(t)) t = "overzicht";
+  if (!TABS.includes(t)) t = "kaart";
   st.tab = t;
   document.querySelectorAll("section[data-tab]").forEach(s => s.hidden = s.dataset.tab !== t);
   document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === t));
   try { history.replaceState(null, "", "#" + t); } catch {}
   window.scrollTo({ top: 0 });
+  if (t === "instellingen" && st.member) checkAdmin();
 }
 
 /* ---------- inloggen en lid worden ---------- */
@@ -649,7 +1187,7 @@ function renderAuthMode() {
   $("#authPw").autocomplete = signup ? "new-password" : "current-password";
   $("#forgot").hidden = signup;
 }
-function authErr(m) { const e = $("#authErr"); e.textContent = m; e.hidden = !m; }
+function authErr(m) { showErr($("#authErr"), m); }
 async function submitAuth(ev) {
   ev.preventDefault(); authErr("");
   const email = $("#authEmail").value.trim(), pw = $("#authPw").value;
@@ -684,9 +1222,9 @@ async function submitJoin(ev) {
   ev.preventDefault();
   const e = $("#joinErr"); e.hidden = true;
   const code = $("#joinCode").value.trim(), house = $("#joinHouse").value;
-  if (!code || !HOUSES.includes(house)) { e.textContent = "Vul de buurtcode in en kies je huisnummer."; e.hidden = false; return; }
+  if (!code || !HOUSES.includes(house)) return showErr(e, "Vul de buurtcode in en kies je huisnummer.");
   if (await join(code, house)) await enterApp();
-  else { e.textContent = "Deze buurtcode klopt niet. Vraag hem na bij een buur."; e.hidden = false; }
+  else showErr(e, "Deze buurtcode klopt niet. Let op hoofdletters, en vraag hem anders na bij een buur.");
 }
 async function forgot() {
   const email = $("#authEmail").value.trim();
@@ -700,10 +1238,11 @@ async function enterApp() {
   st.member = snap.data();
   st.house = HOUSES.includes(st.member.house) ? st.member.house : null;
   showScreen("app");
-  setTab((location.hash || "").slice(1) || "overzicht");
-  initForms();
+  setTab((location.hash || "").slice(1) || "kaart");
+  if (!$("#momentBtn")) mountMoment();
   subscribe();
   render();
+  checkAdmin();
 }
 function subscribe() {
   if (st.live) return;
@@ -712,8 +1251,8 @@ function subscribe() {
   const arr = (k) => (s) => { st[k] = s.docs.map(d => ({ id: d.id, ...d.data() })); render(); };
   const map = (k) => (s) => { const m = {}; s.docs.forEach(d => m[d.id] = d.data()); st[k] = m; render(); };
   st.unsubs = [
-    onSnapshot(collection(fs, "spots"), map("spots"), err),
-    onSnapshot(collection(fs, "houses"), map("phones"), err),
+    onSnapshot(collection(fs, "spots"), (s) => { st.spotsLoaded = true; map("spots")(s); }, err),
+    onSnapshot(collection(fs, "houses"), (s) => { st.phonesLoaded = true; map("phones")(s); }, err),
     onSnapshot(query(collection(fs, "releases"), where("until", ">", cut)), arr("releases"), err),
     onSnapshot(collection(fs, "recurring"), arr("recurring"), err),
     onSnapshot(collection(fs, "claims"), (s) => { st.claims = s.docs.flatMap(d => (d.data().items || []).map(c => ({ ...c, spot: d.id }))); render(); }, err),
@@ -724,7 +1263,7 @@ function unsubscribeAll() { st.unsubs.forEach(u => { try { u(); } catch {} }); s
 
 onAuthStateChanged(auth, async (user) => {
   st.user = user;
-  if (!user) { unsubscribeAll(); st.member = null; st.house = null; showScreen("login"); renderAuthMode(); return; }
+  if (!user) { unsubscribeAll(); st.member = null; st.house = null; st.ob = null; showScreen("login"); renderAuthMode(); return; }
   showScreen("loading");
   try {
     const snap = await getDoc(doc(fs, "members", user.uid));
@@ -735,7 +1274,7 @@ onAuthStateChanged(auth, async (user) => {
         const { code, house } = JSON.parse(pending);
         if (await join(code, house)) { await enterApp(); return; }
         $("#joinHouse").value = house;
-        const e = $("#joinErr"); e.textContent = "Je account is aangemaakt, maar de buurtcode klopt niet. Probeer het opnieuw."; e.hidden = false;
+        showErr($("#joinErr"), "Je account is aangemaakt, maar de buurtcode klopt niet. Probeer het opnieuw.");
       }
       showScreen("join");
       return;
@@ -754,37 +1293,47 @@ document.addEventListener("click", (e) => {
   if (el.tagName === "A") e.preventDefault();
   switch (a) {
     case "goto": closeSheet(); setTab(d.tab); break;
-    case "moment": st.moment = d.v ? Number(d.v) : null; $("#momentInput").value = st.moment ? toInput(st.moment) : ""; render(); break;
+    case "moment": setMoment(d.v ? Number(d.v) : null); break;
     case "spot": spotSheet(d.spot); break;
     case "claimsheet": claimSheet(d.key); break;
     case "claim": claim(d.key); break;
     case "earlysheet": earlySheet(d.key); break;
-    case "early": changeEnd(d.key, fromInput($("#eTime").value)); break;
-    case "cancelwin": { const w = windows().find(x => x.key === d.key); if (w) changeEnd(w.key, w.start > now() ? w.start : round5(now() - 4 * MIN)); break; }
+    case "early": changeEnd(d.key, earlyVal); break;
+    case "cancelwin": { const w = windows().find(x => x.key === d.key); if (w) changeEnd(w.key, w.start > now() ? w.start : floorQ(now())); break; }
     case "unclaim": unclaim(d.id, d.spot); break;
     case "ack": ack(d.id, d.spot); break;
     case "stoprec": stopRec(d.ref); break;
     case "closesheet": closeSheet(); break;
-    case "gotorel": closeSheet(); st.relSpots = new Set([d.spot]); st.relMode = "once"; setTab("vrijgeven"); renderRelForm(); break;
-    case "house": setHouse(d.h); break;
+    case "releasesheet": releaseSheet(d.spot); break;
+    case "requestsheet": requestSheet(); break;
+    case "requestslist": requestsListSheet(); break;
+    case "ackoffer": ackOffer(d.id); break;
     case "linkspot": closeSheet(); linkSpot(d.spot); break;
     case "unlinkspot": closeSheet(); linkSpot(d.spot); break;
     case "linktap": linkTap(d.spot); break;
-    case "dellegacy": delLegacy(); break;
-    case "reload": location.reload(); break;
     case "togglecharger": setCharger(d.spot, el.checked); break;
     case "onlycharger": st.onlyCharger = !st.onlyCharger; render(); break;
     case "savephone": savePhone(false); break;
     case "delphone": savePhone(true); break;
-    case "relspot": st.relSpots.has(d.spot) ? st.relSpots.delete(d.spot) : st.relSpots.add(d.spot); renderRelForm(); break;
-    case "mode": st.relMode = d.mode; renderRelForm(); break;
-    case "recday": { const n = Number(d.d); st.recDays.has(n) ? st.recDays.delete(n) : st.recDays.add(n); renderRelForm(); break; }
-    case "quick": $("#relUntil").value = toInput(Number(d.v)); renderQuick(); break;
+    case "dellegacy": delLegacy(); break;
+    case "uselegacy": useLegacy(); break;
     case "offer": offer(d.id, d.spot); break;
     case "delreq": delReq(d.id); break;
     case "authswitch": st.authMode = st.authMode === "login" ? "signup" : "login"; authErr(""); renderAuthMode(); break;
     case "forgot": forgot(); break;
     case "logout": closeSheet(); signOut(auth); break;
+    case "reload": location.reload(); break;
+    case "calendar": calendarSheet(d.k); break;
+    case "obnext": obNext(); break;
+    case "obcharger": obCharger(d.v === "1"); break;
+    case "obphone": obPhone(); break;
+    case "obskipwa": obSkipWa(); break;
+    case "admindel": adminDelete(d.id, el); break;
+    case "adminunlink": adminUnlink(d.spot, el); break;
+    case "backup": backup(); break;
+    case "cleanup": cleanup(false); break;
+    case "copyid": navigator.clipboard?.writeText(st.user.uid).then(() => toast("Account-ID gekopieerd."), () => toast("Kopiëren lukte niet. Houd de tekst ingedrukt om te kopiëren.")); break;
+    case "ics": downloadIcs(d.k); break;
   }
 });
 document.addEventListener("keydown", (e) => {
@@ -792,26 +1341,18 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g.spot")) { e.preventDefault(); e.target.dataset.action === "linktap" ? linkTap(e.target.dataset.spot) : spotSheet(e.target.dataset.spot); }
 });
 document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
-$("#momentInput").addEventListener("change", (e) => { const v = fromInput(e.target.value); st.moment = isNaN(v) ? null : v; render(); });
-$("#relFrom").addEventListener("change", renderQuick);
-$("#relUntil").addEventListener("change", renderQuick);
-$("#relForm").addEventListener("submit", submitRelease);
-$("#reqForm").addEventListener("submit", submitRequest);
+document.addEventListener("change", (e) => { const el = e.target.closest?.('[data-action="adminhouse"]'); if (el) adminHouse(el.dataset.id, el.value); });
 $("#authForm").addEventListener("submit", submitAuth);
 $("#joinForm").addEventListener("submit", submitJoin);
 
-function initForms() {
-  const f = round5(now());
-  $("#relFrom").value = toInput(f);
-  $("#relUntil").value = toInput(at(f, 1, 8));
-  $("#reqFrom").value = toInput(at(f, 1, 18));
-  $("#reqUntil").value = toInput(at(f, 1, 23));
-}
 const houseOpts = `<option value="">Kies…</option>` + HOUSES.map(h => `<option value="${h}">${STREET} ${h}</option>`).join("");
 $("#authHouse").innerHTML = houseOpts;
 $("#joinHouse").innerHTML = houseOpts;
 renderAuthMode();
-setInterval(() => { if (!st.sheet && !document.activeElement?.matches?.("input,select")) render(); }, 60e3);
+// Testomgeving? Dan duidelijk in beeld, zodat niemand hem met de echte app verwart.
+if (cfg.envLabel) { document.querySelectorAll(".brand .sub").forEach(el => el.textContent = cfg.envLabel); document.documentElement.style.setProperty("--sign", "#b35c00"); }
+// Elke minuut opnieuw tekenen (tijden, meldingen), maar niet terwijl iemand iets invult of aan de schijven draait.
+setInterval(() => { if (!st.sheet && !document.activeElement?.matches?.("input,select,.wheel,.tfbtn") && !document.querySelector(".tfw:not([hidden])")) render(); }, 60e3);
 // Nieuwe versie online gezet? Dan een melding met een knop om te vernieuwen.
 async function checkVersion() {
   try {
