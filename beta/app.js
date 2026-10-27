@@ -4,10 +4,11 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, sendPasswordResetEmail, setPersistence, browserLocalPersistence,
+  EmailAuthProvider, reauthenticateWithCredential, updatePassword, deleteUser,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, onSnapshot, query, where, addDoc, setDoc, updateDoc, deleteDoc,
-  getDoc, getDocs, runTransaction, FieldPath, deleteField,
+  getDoc, getDocs, runTransaction, FieldPath, deleteField, increment,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import * as cfg from "./config.js";
 const firebaseConfig = cfg.firebaseConfig;
@@ -24,12 +25,12 @@ const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
   user: null, member: null, house: null, live: false, unsubs: [],
-  spots: {}, phones: {}, releases: [], recurring: [], claims: [], requests: [],
+  spots: {}, phones: {}, releases: [], recurring: [], claims: [], requests: [], stats: {},
   moment: null, tab: "kaart", onlyCharger: false, momentOpen: false,
   sheet: null, authMode: "login",
   isAdmin: false, ob: null, spotsLoaded: false,
@@ -513,6 +514,13 @@ function renderNotices(wins) {
         <div class="row" style="margin-top:6px">${contactsOf(r.offeredBy).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(`Hoi! Dank je wel dat ik ${range(r.from, r.until)} op je parkeerplek mag staan. Groet, ${STREET} ${st.house}`)}`, `Bedank ${c.name || "nr " + r.offeredBy}`)).join("")}<button class="btn sm ghost" data-action="ackoffer" data-id="${r.id}">Begrepen</button></div></div>`);
     }
   }
+  // Je eigen open verzoek: er is nu een passende plek vrij.
+  for (const r of st.requests) {
+    if (r.house !== st.house) continue;
+    const fit = reqFit(r, wins); if (!fit) continue;
+    badge++;
+    forYou.unshift(`<div class="notice green"><strong>Er is een plek vrij voor je verzoek</strong><span>${esc(plekVan(fit.w.spot))} is vrij ${esc(range(fit.a, r.until))}.</span><div class="row" style="margin-top:6px">${fitBtn(fit.w, fit.a, r.until, r.id)}</div></div>`);
+  }
   // Verzoeken van buren. Is jouw plek dan vrij, dan direct aanbieden.
   const my = st.house ? spotsOf(st.house) : [];
   const open = st.requests.filter(r => !r.offeredSpot && r.until > n && r.house !== st.house).sort((a, b) => a.from - b.from);
@@ -533,6 +541,10 @@ function renderBanner() {
   const b = [];
   // Alleen als iemand de rondleiding heeft weggeklikt zonder plek te koppelen.
   if (st.house && st.spotsLoaded && !spotsOf(st.house).length && !st.ob) b.push(`<div class="notice green"><span>Je hebt nog geen parkeerplek gekoppeld. Dat doe je bij <a href="#instellingen" data-action="goto" data-tab="instellingen">Instellingen</a>.</span></div>`);
+  if (!navigator.onLine) b.unshift(`<div class="notice warn"><strong>Geen internet</strong><span>Je ziet mogelijk niet de laatste stand. Zodra je weer verbinding hebt, werkt alles weer bij.</span></div>`);
+  const m = milestone();
+  if (m) b.push(`<div class="notice green"><strong>${m.n} keer gedeeld!</strong><span>Sinds de start van de buurtteller hebben buren al ${m.n} keer elkaars plek gebruikt.${m.hours >= 2 ? ` Samen zo'n ${m.hours} uur niet op straat geparkeerd.` : ""}</span>
+    <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="mileok" data-v="${m.n}">Leuk, sluiten</button></div></div>`);
   $("#banner").innerHTML = b.join("");
   $("#whoami").textContent = st.house ? `nr ${st.house}` : "";
 }
@@ -600,12 +612,119 @@ function requestSheet() {
   openSheet("Vraag om een plek", `<p class="muted small" style="margin:0">Buren zien je verzoek bij Activiteit en kunnen hun plek aanbieden.</p>
     <form id="reqForm" class="flat" novalidate>
       <div id="reqRange" class="flat"></div>
+      <div id="reqFit" class="flat"></div>
       <div class="field"><label for="reqNote">Waarvoor (mag leeg)</label><input type="text" id="reqNote" maxlength="140" placeholder="Bijv. ouders komen eten"></div>
       <div class="err" id="reqErr" hidden></div>
       <button class="btn block" type="submit">Verzoek plaatsen</button>
     </form>`);
-  const rr = rangeField($("#reqRange"), { from, until: from + 3 * H, quick: true, durLabel: "Duur" });
+  let rr = null;
+  rr = rangeField($("#reqRange"), { from, until: from + 3 * H, quick: true, durLabel: "Duur", onChange: () => rr && paintReqFit(rr.get()) });
+  paintReqFit(rr.get());
   $("#reqForm").addEventListener("submit", (ev) => submitRequest(ev, rr));
+}
+// Terwijl je een periode kiest: is er al een plek vrij, of heb je zelf al een plek?
+function paintReqFit({ from, until }) {
+  const box = $("#reqFit"); if (!box) return;
+  const a = Math.max(from, floorQ(now()));
+  if (!(until > a)) { box.innerHTML = ""; return; }
+  const fits = fitsFor(a, until, windows()).slice(0, 3);
+  const mine = myClaimsIn(a, until);
+  box.innerHTML = (mine.length ? `<div class="notice amber"><strong>Je hebt al een plek in deze periode</strong><span>${mine.map(c => `${esc(plekVan(c.spot))}, ${esc(range(c.from, c.until))}`).join("; ")}. Plaats alleen een verzoek als je nog een plek nodig hebt.</span></div>` : "")
+    + (fits.length ? `<div class="notice green"><strong>Er is al een plek vrij in deze periode</strong><span>Dan hoef je geen verzoek te plaatsen.</span>
+      ${fits.map(w => `<div class="fitrow"><span>${esc(plekVan(w.spot))}${hasCharger(w.spot) ? " · laadpaal" : ""}</span>${fitBtn(w, a, until)}</div>`).join("")}</div>` : "");
+}
+/* ---------- passende plekken ---------- */
+// Plekken van anderen die de hele periode [a, b) vrij en ongeclaimd zijn.
+function fitsFor(a, b, wins) {
+  const out = [];
+  for (const p of SPOTS) {
+    const o = ownerOf(p); if (!o || o === st.house) continue;
+    const w = freeDuring(p, a, b, wins); if (w) out.push(w);
+  }
+  return out;
+}
+function myClaimsIn(a, b) { return liveClaims().filter(c => c.house === st.house && c.from < b && c.until > a); }
+function fitBtn(w, a, b, reqId) {
+  return `<button class="btn green sm" data-action="claimfit" data-key="${w.key}" data-from="${a}" data-until="${b}"${reqId ? ` data-req="${reqId}"` : ""}>Claim voor deze periode</button>`;
+}
+// Eigen open verzoek waarvoor nu een passende plek vrij is.
+function reqFit(r, wins) {
+  if (r.offeredSpot || !(r.until > now())) return null;
+  const a = Math.max(r.from, floorQ(now()));
+  const w = fitsFor(a, r.until, wins)[0];
+  return w ? { w, a } : null;
+}
+// Na een eigen claim: overlapt die met een eigen open verzoek? Vraag wat ermee moet.
+function reqQuestionHtml(f, u, skipId) {
+  const list = st.requests.filter(r => r.house === st.house && !r.offeredSpot && !r.keep && r.id !== skipId && r.until > now() && r.from < u && r.until > f);
+  return list.map(r => {
+    const a = Math.max(r.from, now()), full = f <= a && u >= r.until;
+    const del = `<button class="btn ${full ? "" : "ghost "}sm" data-action="reqdecide" data-id="${r.id}" data-v="del">Verzoek intrekken</button>`;
+    const keep = `<button class="btn ${full ? "ghost " : ""}sm" data-action="reqdecide" data-id="${r.id}" data-v="keep">Verzoek laten staan</button>`;
+    return `<div class="notice reqq">${full
+      ? `<strong>Je had ook een verzoek voor ${esc(range(r.from, r.until))}</strong><span>Daar heb je nu een plek voor. Trek je het in, dan zien buren het niet meer.</span>`
+      : `<strong>Je hebt ook een verzoek voor ${esc(range(r.from, r.until))}</strong><span>Je claim dekt daar een deel van. Laat je het staan, dan blijft het hele verzoek open, bijvoorbeeld voor een tweede auto.</span>`}
+      <div class="row" style="margin-top:6px">${full ? del + keep : keep + del}</div></div>`;
+  }).join("");
+}
+async function reqDecide(id, v, el) {
+  const box = el.closest(".reqq");
+  const ok = await guard(() => v === "del" ? deleteDoc(doc(fs, "requests", id)) : updateDoc(doc(fs, "requests", id), { keep: true }));
+  if (ok && box) box.innerHTML = `<span>${v === "del" ? "Je verzoek is ingetrokken." : "Je verzoek blijft staan."}</span>`;
+}
+/* ---------- buurtteller ---------- */
+const monthKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
+// Tellers per maand en in totaal; namen worden niet bewaard, alleen huisnummers voor je eigen bijdrage.
+function bumpStats({ r = 0, c = 0, min = 0, house = st.house }) {
+  if (!house) return;
+  const t = now(), mins = Math.max(0, Math.round(min));
+  const m = { houses: { [house]: true }, byHouse: { [house]: {} }, updatedAt: t }, tot = { updatedAt: t };
+  if (r) { m.releases = increment(r); m.byHouse[house].r = increment(r); tot.releases = increment(r); }
+  if (c) { m.claims = increment(c); m.byHouse[house].c = increment(c); m.days = { [String(new Date(t).getDate())]: increment(c) }; tot.claims = increment(c); }
+  if (mins) { m.minutes = increment(mins); tot.minutes = increment(mins); }
+  setDoc(doc(fs, "stats", monthKey(t)), m, { merge: true }).catch(e => console.warn("stats", e));
+  setDoc(doc(fs, "stats", "total"), tot, { merge: true }).catch(e => console.warn("stats", e));
+}
+function isoWeek(t) {
+  const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const w1 = new Date(d.getFullYear(), 0, 4);
+  return 1 + Math.round(((d - w1) / D - 3 + ((w1.getDay() + 6) % 7)) / 7);
+}
+const MILESTONES = [25, 50, 100, 250, 500, 1000];
+// Een mijlpaal is twee weken te zien; wie later lid wordt, krijgt geen oude mijlpalen.
+function milestone() {
+  if (!st.member || !st.stats.total) return null;
+  const tot = st.stats.total, n = MILESTONES.filter(x => (tot.claims || 0) >= x).pop();
+  if (!n || (st.member.mile || 0) >= n) return null;
+  const at = (tot.miles || {})[n];
+  if (!at) {
+    if (!milestone.saving) { milestone.saving = true; setDoc(doc(fs, "stats", "total"), { miles: { [n]: now() } }, { merge: true }).catch(e => console.warn(e)).finally(() => { milestone.saving = false; }); }
+    return null;
+  }
+  if (now() - at > 14 * D) return null;
+  return { n, hours: Math.round((tot.minutes || 0) / 60) };
+}
+function renderBuurt() {
+  const t = now(), m = st.stats[monthKey(t)] || {}, cl = m.claims || 0;
+  const a = $("#buurtA");
+  a.hidden = !cl;
+  a.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg><span>Deze maand <strong>${cl} keer</strong> een plek gedeeld in de buurt</span>`;
+  // Balkjes per week van deze maand.
+  const d0 = new Date(t), y = d0.getFullYear(), mo = d0.getMonth(), last = new Date(y, mo + 1, 0).getDate();
+  const weeks = [];
+  for (let d = 1; d <= last; d++) {
+    const wk = isoWeek(new Date(y, mo, d).getTime());
+    let e = weeks.find(x => x.wk === wk); if (!e) weeks.push(e = { wk, n: 0, now: false });
+    e.n += (m.days || {})[String(d)] || 0;
+    if (d === d0.getDate()) e.now = true;
+  }
+  const max = Math.max(1, ...weeks.map(x => x.n));
+  const mine = (m.byHouse || {})[st.house] || {};
+  const tile = (v, l, cls = "") => `<div class="btile"><b class="${cls}">${v}</b><span>${l}</span></div>`;
+  $("#buurtB").innerHTML = `<h2>Buurt deze maand</h2>
+    <div class="btiles">${tile(m.releases || 0, "keer vrijgegeven")}${tile(cl, "keer geclaimd", "free")}${tile(Math.round((m.minutes || 0) / 60), "uur gedeeld")}${tile(Object.keys(m.houses || {}).length, "adressen deden mee")}</div>
+    <div class="bweeks" aria-label="Claims per week">${weeks.map(x => `<div class="bw"><i class="${x.now ? "now" : ""}" style="height:${Math.round(4 + 30 * x.n / max)}px"></i><span>wk ${x.wk}</span></div>`).join("")}</div>
+    <p class="muted small" style="margin:0">${mine.r || mine.c ? `Nr ${esc(st.house)} gaf deze maand ${mine.r || 0} keer vrij en claimde ${mine.c || 0} keer. Dank je!` : "Geef je plek vrij als je weg bent, dan telt die hier mee."}</p>`;
 }
 function otherRequestsHtml(wins) {
   const n = now();
@@ -619,14 +738,15 @@ function otherRequestsHtml(wins) {
   }).join("")}</div>`;
 }
 function requestsListSheet() { openSheet("Buren zoeken een plek", otherRequestsHtml(windows())); }
-function myRequestsHtml() {
+function myRequestsHtml(wins) {
   const n = now();
   const list = st.requests.filter(r => r.house === st.house && r.until > n).sort((a, b) => a.from - b.from);
   if (!list.length) return "";
-  return list.map(r => `<div class="card ${r.offeredSpot ? "is-free" : ""}"><div class="big">${r.offeredSpot ? `Geregeld door nr ${esc(r.offeredBy)}` : "Nog niet geregeld"}</div>
+  return list.map(r => { const fit = reqFit(r, wins); return `<div class="card ${r.offeredSpot ? "is-free" : ""}"><div class="big">${r.offeredSpot ? (r.selfClaim ? "Geregeld" : `Geregeld door nr ${esc(r.offeredBy)}`) : "Nog niet geregeld"}</div>
     <div class="when">${esc(range(r.from, r.until))}</div>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}
+    ${fit ? `<div class="notice green"><strong>Er is nu een plek vrij voor je verzoek</strong><span>${esc(plekVan(fit.w.spot))}</span><div class="row" style="margin-top:6px">${fitBtn(fit.w, fit.a, r.until, r.id)}</div></div>` : ""}
     <div class="row">${r.offeredSpot ? "" : `<a class="btn wa sm" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(r.from, r.until)} een parkeerplek vrij? ${r.note ? "(" + r.note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>`}
-    <button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Intrekken</button></div></div>`).join("");
+    <button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Intrekken</button></div></div>`; }).join("");
 }
 // Aanbieden kan als de plek in die periode niet door een ander geclaimd is.
 function canOffer(p, r) {
@@ -665,7 +785,8 @@ function renderMine(wins) {
   $("#chargerToggles").innerHTML = my.map(p => `<label class="toggle" for="ch_${p}"><span><strong>${esc(mineLabel(p))}</strong> heeft een openbare laadpaal die buren mogen gebruiken</span><input type="checkbox" id="ch_${p}" data-action="togglecharger" data-spot="${p}" ${hasCharger(p) ? "checked" : ""}></label>`).join("");
 
   const n = now();
-  const mineW = wins.filter(w => w.house === st.house && w.end > n).slice(0, 12);
+  // Eenmalige vrijgaven allemaal; van de wekelijkse alleen de eerstvolgende dagen of als iemand geclaimd heeft.
+  const mineW = wins.filter(w => w.house === st.house && w.end > n && (w.src === "once" || w.start < n + 2 * D || claimsIn(w).length)).slice(0, 8);
   const myClaims = liveClaims().filter(c => c.house === st.house && c.until > n).sort((a, b) => a.from - b.from);
   const recs = st.recurring.filter(r => r.house === st.house);
   const myReqs = st.requests.filter(r => r.house === st.house && r.until > n);
@@ -685,12 +806,12 @@ function renderMine(wins) {
   if (recs.length) {
     html += `<div class="dayhead">Wekelijks</div>` + recs.map(r => `<div class="card"><div class="head"><span class="pid">${esc(mineLabel(r.spot))}</span><span class="pill neutral">wekelijks</span></div>
       <div class="when">${DAYS.filter(([d]) => (r.days || []).includes(d)).map(([, l]) => l).join(" ")} · ${esc(r.fromTime)} tot ${esc(r.untilTime)}</div>
-      <div class="row"><button class="btn danger sm" data-action="stoprec" data-ref="${r.id}">Stop herhaling</button></div></div>`).join("");
+      <div class="row"><button class="btn ghost sm" data-action="recsheet" data-id="${r.id}">Aanpassen</button><button class="btn danger sm" data-action="stoprec" data-ref="${r.id}">Stop herhaling</button></div></div>`).join("");
   }
   if (myClaims.length) html += `<div class="dayhead">${myClaims.length > 1 ? "Jouw claims" : "Jouw claim"}</div>` + myClaims.map(c => `<div class="card is-claimed"><div class="big">Plek van ${esc(spotNr(c.spot))}</div>
     <div class="when">${esc(range(c.from, c.until))}</div>
-    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Intrekken"}</button>${calBtn(calForClaim(c))}${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("");
-  if (myReqs.length) html += `<div class="dayhead">${myReqs.length > 1 ? "Jouw verzoeken" : "Jouw verzoek"}</div>` + myRequestsHtml();
+    <div class="row"><button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">${c.from <= n ? "Ik ben weg" : "Intrekken"}</button>${extendInfo(c, wins) ? `<button class="btn ghost sm" data-action="extendsheet" data-id="${c.id}" data-spot="${c.spot}">Verlengen</button>` : ""}${calBtn(calForClaim(c))}${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`).join("");
+  if (myReqs.length) html += `<div class="dayhead">${myReqs.length > 1 ? "Jouw verzoeken" : "Jouw verzoek"}</div>` + myRequestsHtml(wins);
   $("#mine").innerHTML = html;
 }
 
@@ -698,7 +819,7 @@ function render() {
   if (!st.member) return;
   const wins = windows();
   renderBanner(); renderNotices(wins); renderMoment(); renderMap(wins); renderOptions(wins);
-  renderMine(wins);
+  renderMine(wins); renderBuurt();
   $("#accountId").textContent = st.user ? st.user.uid : "";
   if (st.ob && ["spot", "housemate"].includes(st.ob.steps[st.ob.i])) renderOnboard(); else maybeOnboard();
   renderAdmin();
@@ -1029,23 +1150,63 @@ async function submitRelease({ spots, mode, range: r, days, ft, ut, note }, fail
     if (until - from > 31 * D) return fail("Geef je plek voor maximaal een maand tegelijk vrij.");
     let res = null;
     const ok = await guard(async () => { for (const p of spots) res = await upsertRelease(p, from, until, note); });
-    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${res.merged ? "nu " : ""}vrij ${range(res.f, res.u)}`, `vrij ${range(res.f, res.u)}`, res.merged, calForRelease(spots[0], res.f, res.u));
+    if (ok) { bumpStats({ r: spots.length }); afterRelease(`${spots.map(mineLabel).join(" en ")} is ${res.merged ? "nu " : ""}vrij ${range(res.f, res.u)}`, res.merged, calForRelease(spots[0], res.f, res.u), spots, { f: res.f, u: res.u }); }
   } else {
     if (!days.length) return fail("Kies minstens één dag.");
     if (!ft || !ut || ft === ut) return fail("Vul een begin- en eindtijd in die verschillen.");
     const ok = await guard(async () => { for (const p of spots) await addDoc(collection(fs, "recurring"), { spot: p, house: st.house, days, fromTime: ft, untilTime: ut, note, since: sod(now()), overrides: {}, createdAt: now() }); });
     const dd = `elke ${DAYS.filter(([d]) => days.includes(d)).map(([, l]) => l).join(", ")} vrij van ${ft} tot ${ut}`;
-    if (ok) afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, dd);
+    if (ok) { bumpStats({ r: spots.length }); afterRelease(`${spots.map(mineLabel).join(" en ")} is ${dd}`, false, null, spots, null); }
   }
 }
-function afterRelease(txt, shareTxt, merged, cal) {
+function afterRelease(txt, merged, cal, spots, span) {
   setTab("kaart");
   openSheet("Vrijgegeven", `<div class="notice green"><span>${esc(txt)}.${merged ? " Samengevoegd met je eerdere vrijgave." : ""}</span></div>
-    <p class="muted" style="margin:0">Wil je het de buren laten weten?</p>
-    <a class="btn wa block" href="${esc(waShare(`Hoi buren! De parkeerplek van ${STREET} ${st.house} is ${shareTxt}. Claimen kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
+    ${helpHtml(spots || [], span)}
     ${cal ? calBtn(cal, "btn ghost block") : ""}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
   render();
+}
+// Zoekt een buur in de zojuist vrijgegeven periode een plek? Dan kun je hem die direct geven.
+function helpHtml(spots, span) {
+  const n = now(), wins = windows(), out = [];
+  for (const r of st.requests) {
+    if (r.house === st.house || r.offeredSpot || !(r.until > n)) continue;
+    const a = Math.max(r.from, floorQ(n));
+    const p = spots.find(p => freeDuring(p, a, r.until, wins)
+      || (span && a >= span.f && r.until <= span.u && !liveClaims().some(c => c.spot === p && c.from < r.until && c.until > a)));
+    if (p) out.push(`<div class="notice reqcard"><div><strong>Nr ${esc(r.house)} zoekt een plek</strong><div>${esc(range(r.from, r.until))}${r.note ? ` · ${esc(r.note)}` : ""}</div></div>
+      <button class="btn green sm" data-action="offer" data-id="${r.id}" data-spot="${p}">Geef aan nr ${esc(r.house)}</button></div>`);
+  }
+  return out.length ? `<div class="dayhead">Buren zoeken in deze periode een plek</div>${out.join("")}` : "";
+}
+// Eén claim opslaan; twee buren kunnen nooit tegelijk dezelfde tijd claimen.
+async function doClaim(w, f, u) {
+  await mutateClaims(w.spot, (items) => {
+    const clash = items.find(c => c.house && c.until > c.from && c.from < u && c.until > f);
+    if (clash) throw new UserError(`Nr ${clash.house} heeft deze plek al ${range(clash.from, clash.until)}. Kies een andere tijd.`);
+    items.push({ id: rid(), owner: w.house, windowStart: w.start, windowEnd: w.end, house: st.house, from: f, until: u, earlyReturn: null, createdAt: now() });
+  });
+  bumpStats({ c: 1, min: (u - f) / MIN });
+}
+function claimDoneHtml(w, f, u, reqId) {
+  const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
+  const btns = waBtns(w.house, msg);
+  return `<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
+    ${reqQuestionHtml(f, u, reqId)}
+    ${calBtn(calForClaim({ spot: w.spot, until: u }), "btn ghost block")}
+    ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : `<p class="muted" style="margin:0">Nr ${esc(w.house)} heeft geen WhatsApp-nummer ingevuld, maar ziet je claim in de app.</p>`}
+    <button class="btn ghost block" data-action="closesheet">Klaar</button>`;
+}
+// "Claim voor deze periode": in één keer precies de gevraagde tijd claimen.
+async function claimFit(key, a, b, reqId) {
+  const w = windows().find(x => x.key === key);
+  const f = Math.max(a, floorQ(now()));
+  if (!w || !(b > f)) { toast("Deze plek is niet meer vrij."); render(); return; }
+  try { await doClaim(w, f, b); }
+  catch (e) { console.warn(e); toast(e instanceof UserError ? e.message : "Claimen lukte niet. Controleer je verbinding en probeer het opnieuw."); return; }
+  if (reqId) await guard(() => updateDoc(doc(fs, "requests", reqId), { offeredBy: w.house, offeredSpot: w.spot, ackOffered: true, selfClaim: true }));
+  openSheet("Geclaimd", claimDoneHtml(w, f, b, reqId));
 }
 async function claim(key) {
   const w = windows().find(x => x.key === key); if (!w || !claimRange) return;
@@ -1055,18 +1216,48 @@ async function claim(key) {
   if (from < w.start - MIN || until > w.end + MIN) return fail(`Kies een tijd binnen ${range(w.start, w.end)}.`);
   if (until <= now()) return fail("Deze tijd ligt al in het verleden.");
   const f = Math.max(from, w.start), u = Math.min(until, w.end);
+  try { await doClaim(w, f, u); }
+  catch (e) { console.warn(e); return fail(e instanceof UserError ? e.message : "Claimen lukte niet. Controleer je verbinding en probeer het opnieuw."); }
+  sheetBody(claimDoneHtml(w, f, u, null));
+}
+// Claim verlengen kan als de plek na je eindtijd nog vrij is binnen dezelfde vrijgave.
+function extendInfo(c, wins = windows()) {
+  if (c.earlyReturn || c.house !== st.house || !(c.until > now())) return null;
+  const w = wins.find(w => w.spot === c.spot && w.start <= c.until && w.end > c.until); if (!w) return null;
+  const next = liveClaims().filter(x => x.spot === c.spot && x.id !== c.id && x.from >= c.until).sort((a, b) => a.from - b.from)[0];
+  const max = Math.min(w.end, next ? next.from : Infinity);
+  return max - c.until >= Q ? { w, max } : null;
+}
+let extendVal = 0;
+function extendSheet(id, spot) {
+  const c = liveClaims().find(x => x.id === id && x.spot === spot); if (!c) return;
+  const info = extendInfo(c); if (!info) { toast("Verlengen kan nu niet: de plek is daarna niet vrij."); return; }
+  extendVal = Math.min(info.max, c.until + H);
+  openSheet("Claim verlengen", `<div class="when">${esc(plekVan(spot))}: nu ${esc(range(c.from, c.until))}</div>
+    <div id="extTF"></div>
+    <p class="muted small" style="margin:0">Je kunt verlengen tot uiterlijk ${esc(when(info.max))}.</p>
+    <div class="err" id="xErr" hidden></div>
+    <button class="btn green block" data-action="extend" data-id="${id}" data-spot="${spot}">Verlengen</button>`);
+  timeField($("#extTF"), { label: "Nieuwe eindtijd", get: () => extendVal, set: (v) => { extendVal = v; }, min: () => c.until + Q, max: () => info.max });
+  $("#extTF .tfbtn").click();
+}
+async function extendClaim(id, spot) {
+  const c = liveClaims().find(x => x.id === id && x.spot === spot); if (!c) return;
+  const info = extendInfo(c), err = $("#xErr");
+  if (!info) return showErr(err, "De plek is niet meer vrij na je eindtijd.");
+  const u = Math.min(extendVal, info.max), old = c.until;
+  if (!(u > old)) return showErr(err, "Kies een latere eindtijd.");
   try {
-    await mutateClaims(w.spot, (items) => {
-      const clash = items.find(c => c.house && c.until > c.from && c.from < u && c.until > f);
-      if (clash) throw new UserError(`Nr ${clash.house} heeft deze plek al ${range(clash.from, clash.until)}. Kies een andere tijd.`);
-      items.push({ id: rid(), owner: w.house, windowStart: w.start, windowEnd: w.end, house: st.house, from: f, until: u, earlyReturn: null, createdAt: now() });
+    await mutateClaims(spot, (items) => {
+      const it = items.find(x => x.id === id); if (!it) throw new UserError("Je claim bestaat niet meer.");
+      const clash = items.find(x => x.id !== id && x.house && x.until > x.from && x.from < u && x.until > it.until);
+      if (clash) throw new UserError(`Nr ${clash.house} heeft de plek daarna al geclaimd.`);
+      it.until = u; it.windowEnd = Math.max(it.windowEnd || 0, info.w.end);
     });
-  } catch (e) { console.warn(e); return fail(e instanceof UserError ? e.message : "Claimen lukte niet. Controleer je verbinding en probeer het opnieuw."); }
-  const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
-  const btns = waBtns(w.house, msg);
-  sheetBody(`<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
-    ${calBtn(calForClaim({ spot: w.spot, until: u }), "btn ghost block")}
-    ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : `<p class="muted" style="margin:0">Nr ${esc(w.house)} heeft geen WhatsApp-nummer ingevuld, maar ziet je claim in de app.</p>`}
+  } catch (e) { console.warn(e); return showErr(err, e instanceof UserError ? e.message : "Verlengen lukte niet. Probeer het opnieuw."); }
+  bumpStats({ min: (u - old) / MIN });
+  sheetBody(`<div class="notice green"><span>Je claim op ${esc(plekVan(spot))} loopt nu tot ${esc(when(u))}.</span></div>
+    ${calBtn(calForClaim({ spot, until: u }), "btn ghost block")}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function unclaim(id, spot) {
@@ -1107,6 +1298,33 @@ async function changeEnd(key, t) {
     ${hit.map(c => { const b = waBtns(c.house, msgFor(c)); return b ? `<p class="muted" style="margin:0">Waarschuw nr ${esc(c.house)}:</p>${b}` : `<div class="note">Nr ${esc(c.house)} heeft geen WhatsApp-nummer ingevuld. Ze zien het in de app.</div>`; }).join("")}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
+let recDays = new Set();
+function recSheet(id) {
+  const r = st.recurring.find(x => x.id === id); if (!r) return;
+  recDays = new Set(r.days || []);
+  openSheet(`${mineLabel(r.spot)}: elke week`, `
+    <div class="field"><span class="lbl">Op deze dagen</span><div class="chips" id="recDays"></div></div>
+    <div class="two">
+      <div class="field"><label for="recF">Van</label><input type="time" id="recF" value="${esc(r.fromTime || "08:00")}" step="900"></div>
+      <div class="field"><label for="recU">Tot</label><input type="time" id="recU" value="${esc(r.untilTime || "18:00")}" step="900"></div>
+    </div>
+    <p class="muted small" style="margin:0">Ligt de eindtijd voor de begintijd, dan loopt het door tot de volgende dag. Claims die buren al hebben gedaan, blijven gelden.</p>
+    <div class="err" id="recErr" hidden></div>
+    <button class="btn block" data-action="recsave" data-id="${id}">Opslaan</button>
+    <button class="btn danger block" data-action="stoprec" data-ref="${id}">Stop herhaling</button>`);
+  const paint = () => { $("#recDays").innerHTML = DAYS.map(([d, l]) => `<button type="button" class="chip" data-recday="${d}" aria-pressed="${recDays.has(d)}">${l}</button>`).join(""); };
+  $("#recDays").addEventListener("click", (e) => { const b = e.target.closest("[data-recday]"); if (!b) return; const d = Number(b.dataset.recday); recDays.has(d) ? recDays.delete(d) : recDays.add(d); paint(); });
+  paint();
+}
+async function recSave(id) {
+  const r = st.recurring.find(x => x.id === id); if (!r) return;
+  const err = $("#recErr"), ft = $("#recF").value, ut = $("#recU").value, days = [...recDays];
+  if (!days.length) return showErr(err, "Kies minstens één dag.");
+  if (!ft || !ut || ft === ut) return showErr(err, "Vul een begin- en eindtijd in die verschillen.");
+  const fields = { days, fromTime: ft, untilTime: ut };
+  if (ft !== r.fromTime || ut !== r.untilTime) fields.overrides = {};
+  if (await guard(() => updateDoc(doc(fs, "recurring", id), fields))) { closeSheet(); toast("Wekelijkse vrijgave aangepast."); }
+}
 async function stopRec(id) { if (await guard(() => deleteDoc(doc(fs, "recurring", id)))) toast("Herhaling gestopt."); }
 async function submitRequest(ev, rr) {
   ev.preventDefault();
@@ -1128,7 +1346,7 @@ async function offer(id, p) {
   const wins = windows();
   const ok = await guard(async () => {
     // Staat de plek al vrij in die periode, dan alleen de claim; anders eerst vrijgeven (samengevoegd met wat er al is).
-    if (!wins.some(w => w.spot === p && w.start <= from && w.end >= until)) await upsertRelease(p, from, until, `Voor nr ${r.house}`);
+    if (!wins.some(w => w.spot === p && w.start <= from && w.end >= until)) { await upsertRelease(p, from, until, `Voor nr ${r.house}`); bumpStats({ r: 1 }); }
     await mutateClaims(p, (items) => {
       const clash = items.find(c => c.house && c.until > c.from && c.from < until && c.until > from);
       if (clash) throw new UserError(`Nr ${clash.house} heeft je plek in die periode al geclaimd.`);
@@ -1136,12 +1354,51 @@ async function offer(id, p) {
     });
     await updateDoc(doc(fs, "requests", id), { offeredBy: st.house, offeredSpot: p });
   });
+  if (ok) bumpStats({ c: 1, min: (until - from) / MIN, house: r.house });
   if (ok) openSheet("Aangeboden", `<div class="notice green"><span>Je plek staat klaar voor nr ${esc(r.house)}, ${esc(range(from, until))}.</span></div>
     ${waBtns(r.house, `Hoi! Je kunt ${range(from, until)} op mijn parkeerplek staan. Groet, ${STREET} ${st.house}`)}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function ackOffer(id) { await guard(() => updateDoc(doc(fs, "requests", id), { ackOffered: true })); }
 async function delReq(id) { if (await guard(() => deleteDoc(doc(fs, "requests", id)))) toast("Verzoek ingetrokken."); }
+
+/* ---------- account ---------- */
+async function reauth(pw) { await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(st.user.email, pw)); }
+const PW_ERR = {
+  "auth/wrong-password": "Je huidige wachtwoord klopt niet.",
+  "auth/invalid-credential": "Je huidige wachtwoord klopt niet.",
+  "auth/missing-password": "Vul je wachtwoord in.",
+  "auth/weak-password": "Kies een wachtwoord van minstens 6 tekens.",
+  "auth/too-many-requests": "Te veel pogingen. Wacht even en probeer opnieuw.",
+  "auth/network-request-failed": "Geen verbinding met internet.",
+};
+async function changePw(el) {
+  const err = $("#pwErr"), old = $("#pwOld").value, nw = $("#pwNew").value; showErr(err, "");
+  if (!old) return showErr(err, "Vul je huidige wachtwoord in.");
+  if (nw.length < 6) return showErr(err, "Kies een nieuw wachtwoord van minstens 6 tekens.");
+  el.disabled = true;
+  try {
+    await reauth(old); await updatePassword(auth.currentUser, nw);
+    $("#pwOld").value = ""; $("#pwNew").value = ""; $("#setPw").open = false;
+    toast("Je wachtwoord is gewijzigd.");
+  } catch (e) { console.warn(e); showErr(err, PW_ERR[e.code] || "Dat lukte niet. Probeer het opnieuw."); }
+  finally { el.disabled = false; }
+}
+async function delAccount(el) {
+  const err = $("#delErr"), pw = $("#delPw").value; showErr(err, "");
+  if (!pw) return showErr(err, "Vul je wachtwoord in ter bevestiging.");
+  if (!confirmTap("delacc", el, "Zeker weten? Tik nog een keer")) return;
+  el.disabled = true;
+  try { await reauth(pw); }
+  catch (e) { console.warn(e); el.disabled = false; el.textContent = "Account definitief verwijderen"; return showErr(err, PW_ERR[e.code] || "Dat lukte niet. Probeer het opnieuw."); }
+  try {
+    if (st.house) { try { await updateDoc(doc(fs, "houses", st.house), new FieldPath("contacts", st.user.uid), deleteField()); } catch (e) { console.warn(e); } }
+    await deleteDoc(doc(fs, "members", st.user.uid));
+    unsubscribeAll();
+    await deleteUser(auth.currentUser);
+    toast("Je account is verwijderd. Bedankt voor het meedoen!");
+  } catch (e) { console.warn(e); el.disabled = false; showErr(err, "Verwijderen lukte niet helemaal. Vraag de beheerder om hulp."); }
+}
 
 /* ---------- tabs ---------- */
 const TABS = ["kaart", "activiteit", "instellingen"];
@@ -1257,6 +1514,7 @@ function subscribe() {
     onSnapshot(collection(fs, "recurring"), arr("recurring"), err),
     onSnapshot(collection(fs, "claims"), (s) => { st.claims = s.docs.flatMap(d => (d.data().items || []).map(c => ({ ...c, spot: d.id }))); render(); }, err),
     onSnapshot(query(collection(fs, "requests"), where("until", ">", cut)), arr("requests"), err),
+    onSnapshot(collection(fs, "stats"), map("stats"), err),
   ];
 }
 function unsubscribeAll() { st.unsubs.forEach(u => { try { u(); } catch {} }); st.unsubs = []; st.live = false; }
@@ -1302,12 +1560,21 @@ document.addEventListener("click", (e) => {
     case "cancelwin": { const w = windows().find(x => x.key === d.key); if (w) changeEnd(w.key, w.start > now() ? w.start : floorQ(now())); break; }
     case "unclaim": unclaim(d.id, d.spot); break;
     case "ack": ack(d.id, d.spot); break;
-    case "stoprec": stopRec(d.ref); break;
+    case "stoprec": if (st.sheet) closeSheet(); stopRec(d.ref); break;
     case "closesheet": closeSheet(); break;
     case "releasesheet": releaseSheet(d.spot); break;
     case "requestsheet": requestSheet(); break;
     case "requestslist": requestsListSheet(); break;
     case "ackoffer": ackOffer(d.id); break;
+    case "claimfit": claimFit(d.key, Number(d.from), Number(d.until), d.req || null); break;
+    case "reqdecide": reqDecide(d.id, d.v, el); break;
+    case "recsheet": recSheet(d.id); break;
+    case "recsave": recSave(d.id); break;
+    case "extendsheet": extendSheet(d.id, d.spot); break;
+    case "extend": extendClaim(d.id, d.spot); break;
+    case "mileok": saveMember({ mile: Number(d.v) }); render(); break;
+    case "changepw": changePw(el); break;
+    case "delaccount": delAccount(el); break;
     case "linkspot": closeSheet(); linkSpot(d.spot); break;
     case "unlinkspot": closeSheet(); linkSpot(d.spot); break;
     case "linktap": linkTap(d.spot); break;
@@ -1352,7 +1619,7 @@ renderAuthMode();
 // Testomgeving? Dan duidelijk in beeld, zodat niemand hem met de echte app verwart.
 if (cfg.envLabel) { document.querySelectorAll(".brand .sub").forEach(el => el.textContent = cfg.envLabel); document.documentElement.style.setProperty("--sign", "#b35c00"); }
 // Elke minuut opnieuw tekenen (tijden, meldingen), maar niet terwijl iemand iets invult of aan de schijven draait.
-setInterval(() => { if (!st.sheet && !document.activeElement?.matches?.("input,select,.wheel,.tfbtn") && !document.querySelector(".tfw:not([hidden])")) render(); }, 60e3);
+setInterval(() => { if (!st.sheet && !document.activeElement?.matches?.("input,select,.wheel,.tfbtn,.momentbtn") && !document.querySelector(".tfw:not([hidden])")) render(); }, 60e3);
 // Nieuwe versie online gezet? Dan een melding met een knop om te vernieuwen.
 async function checkVersion() {
   try {
@@ -1364,4 +1631,7 @@ async function checkVersion() {
 }
 checkVersion();
 setInterval(checkVersion, 15 * 60e3);
+window.addEventListener("online", () => render());
+window.addEventListener("offline", () => render());
+$("#appVersion").textContent = `Versie ${APP_VERSION}`;
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkVersion(); });
