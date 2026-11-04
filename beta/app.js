@@ -25,7 +25,7 @@ const HOUSES = ["15","17","19","21","23","25","27","32","34","36","38"];
 const SPOTS = ["P08","P09","P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"];
 const DAYS = [[1,"ma"],[2,"di"],[3,"wo"],[4,"do"],[5,"vr"],[6,"za"],[0,"zo"]];
 const MIN = 60e3, H = 60 * MIN, D = 24 * H, Q = 15 * MIN;
-const APP_VERSION = "7.3";
+const APP_VERSION = "7.4";
 const KEEP_DAYS = 30; // oudere vrijgaven, claims en verzoeken worden opgeruimd
 
 const st = {
@@ -120,6 +120,84 @@ function contactsOf(h) {
 function waBtns(h, text) {
   return contactsOf(h).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(text)}`, c.name ? `App ${c.name}` : `App nr ${h}`)).join("");
 }
+
+/* ---------- berichten ---------- */
+// Alle WhatsApp-berichten. De beheerder kan elke tekst aanpassen (config/berichten); leeg betekent: deze standaardtekst.
+// Opmaak zoals in WhatsApp: *vet*, _schuin_. Woorden tussen {} vult de app zelf in.
+const MSG_DEF = {
+  bezoek: { label: "Aan je bezoek", when: "Knop App je bezoek bij je claim en na het claimen.", vars: ["tijd", "plekuitleg", "route", "locatie"],
+    text: "Hoi! 👋 Je kunt parkeren op de plek van een buur uit ons hofje.\n\n📅 *Wanneer*\n{tijd}\n\n🅿️ *Plek*\n{plekuitleg}\n\n🚗 *Zo kom je er*\n{route}\n\n📍 *Locatie*\n{locatie}\n\n_Het is niet onze eigen plek, dus sta er alleen in deze tijd. Is de plek bezet? App of bel me even._\n\nGroet, {naam}" },
+  bezoekNieuw: { label: "Aan je bezoek: nieuwe tijd", when: "Na het aanpassen van je claim.", vars: ["tijd", "plekuitleg", "locatie"],
+    text: "Hoi! De tijd voor de parkeerplek is veranderd.\n\n📅 *Nieuwe tijd*\n{tijd}\n\n🅿️ *Plek*\n{plekuitleg}\n📍 {locatie}\n\nGroet, {naam}" },
+  bezoekWeg: { label: "Aan je bezoek: eigenaar komt eerder terug", when: "Als de eigenaar eerder terugkomt en je claim korter wordt.", vars: ["eindtijd", "plek"],
+    text: "Hoi! De buur van de parkeerplek komt eerder terug.\n\n⏰ *Zet je auto weg voor {eindtijd}*\nPlek: {plek}\n\nSorry voor het gedoe! Groet, {naam}" },
+  bezoekVervalt: { label: "Aan je bezoek: plek vervalt", when: "Als de eigenaar eerder terugkomt en je claim helemaal vervalt.", vars: ["plek"],
+    text: "Hoi! De buur van de parkeerplek komt eerder terug, dus je kunt toch niet op de plek van {plek} staan. Sorry voor het gedoe! 🙈\n\nGroet, {naam}" },
+  eigenaarClaim: { label: "Aan de eigenaar: geclaimd", when: "Na het claimen van een plek.", vars: ["tijd"],
+    text: "Hoi! Ik heb je parkeerplek geclaimd. 🙏\n\n📅 *{tijd}*\n\nDank je wel! Groet, {afzender}" },
+  eigenaarStaat: { label: "Aan de eigenaar: vanaf je claim", when: "Knop bij je claim onder Van jou.", vars: ["tijd"],
+    text: "Hoi! Ik sta op je parkeerplek.\n\n📅 *{tijd}*\n\nGroet, {afzender}" },
+  eigenaarAangepast: { label: "Aan de eigenaar: claim aangepast", when: "Na het aanpassen van je claim.", vars: ["tijd"],
+    text: "Hoi! Ik heb mijn claim op je parkeerplek aangepast.\n\n📅 *Nieuwe tijd*\n{tijd}\n\nGroet, {afzender}" },
+  eigenaarGeannuleerd: { label: "Aan de eigenaar: claim geannuleerd", when: "Na het annuleren van je claim.", vars: ["tijd"],
+    text: "Hoi! Ik heb mijn claim op je parkeerplek geannuleerd ({tijd}). Je plek is weer vrij voor anderen.\n\nGroet, {afzender}" },
+  eigenaarWeg: { label: "Aan de eigenaar: ik ben weg", when: "Als je eerder weggaat dan je claim.", vars: [],
+    text: "Hoi! Ik ben weg van je parkeerplek. Dank je wel! 🙏\n\nGroet, {afzender}" },
+  bedank: { label: "Bedanken voor een geregeld verzoek", when: "Als een buur je verzoek heeft geregeld.", vars: ["tijd"],
+    text: "Hoi! Dank je wel dat ik op je parkeerplek mag staan. 🙏\n\n📅 *{tijd}*\n\nGroet, {afzender}" },
+  aangeboden: { label: "Aan de buur die je je plek gaf", when: "Na het aanbieden van je plek bij een verzoek.", vars: ["tijd"],
+    text: "Hoi! Je kunt op mijn parkeerplek staan. 🅿️\n\n📅 *{tijd}*\n\nGroet, {afzender}" },
+  claimer: { label: "Aan de buur op je plek", when: "Knop bij wie op jouw plek staat.", vars: ["tijd"],
+    text: "Hoi! Over je claim op mijn parkeerplek, *{tijd}*: " },
+  eerderTerug: { label: "Eerder terug: auto wegzetten", when: "Als je eerder terugkomt en een buur zijn auto moet wegzetten.", vars: ["eindtijd"],
+    text: "Hoi! Ik kom eerder terug. 🙈\n\n⏰ *Wil je je auto voor {eindtijd} wegzetten?*\n\nSorry en dank je! Groet, {afzender}" },
+  eerderVervalt: { label: "Eerder terug: claim vervalt", when: "Als je eerder terugkomt en de claim van een buur vervalt.", vars: ["tijd"],
+    text: "Hoi! Ik kom eerder terug, dus je kunt toch niet op mijn parkeerplek staan ({tijd}). Sorry! 🙈\n\nGroet, {afzender}" },
+  buurtgroep: { label: "Aan de buurtgroep", when: "Knop App de buurtgroep bij je verzoek.", vars: ["tijd", "notitie", "app"],
+    text: "Hoi buren! 🙋 Heeft iemand een parkeerplek vrij?\n\n📅 *{tijd}*\n{notitie}\n\nAanbieden kan in Parkeren Jutfasehof:\n{app}" },
+  beheerAdres: { label: "Aan de beheerder: adres klopt niet", when: "Bij je adres onder Instellingen.", vars: ["beheerder"],
+    text: "Hoi {beheerder}, mijn adres in Parkeren Jutfasehof klopt niet. Ik woon op Peizerdiep " },
+  beheerVraag: { label: "Aan de beheerder: vraag", when: "Onder Account bij Instellingen.", vars: ["beheerder"],
+    text: "Hoi {beheerder}, ik heb een vraag over Parkeren Jutfasehof: " },
+};
+const MSG_COMMON = ["naam", "afzender", "adres"];
+const DEF_ROUTE = "Rij vanaf de Jutfaseweg het hofje in en volg de inrit tot het einde. Het parkeerterrein ligt links achterin. Bij elke plek staat een bordje met het adres.";
+const DEF_LOC = "https://maps.app.goo.gl/VEAKay5nCFUgxgFe9";
+const DEF_PLEK_ALG = "achterin ons hofje";
+// Standaard-uitleg voor plekken die je op het bordje niet uit elkaar houdt (sleutel: naam van de plek).
+const DEF_PLEK = {
+  "27a": "de plek aan de linkerkant als je het parkeerterrein oprijdt. Op het bordje staat Peizerdiep 27.",
+  "27b": "het laatste plekje rechts, op de hoek. Op het bordje staat Peizerdiep 27.",
+};
+const bcfg = () => (st.config && st.config.berichten) || {};
+// Tijd voor in een bericht: altijd met dag en tijd, nooit "nu" (de ontvanger leest het later).
+const mRange = (a, b) => sod(a) === sod(b) ? `${when(a)} tot ${hm(b)}` : `${when(a)} tot ${when(b)}`;
+function plekText(p) {
+  const pl = bcfg().plekken || {}, name = spotName(p);
+  return p in pl ? pl[p] : (DEF_PLEK[name] || "");
+}
+function plekUitleg(p) {
+  const adres = `${STREET} ${ownerOf(p) || ""}`.trim(), t = plekText(p);
+  return t ? `${adres}: ${t}` : `${adres}, ${bcfg().plekAlgemeen ?? DEF_PLEK_ALG}`;
+}
+function spotVars(p) { return { plek: `${STREET} ${ownerOf(p) || ""}`.trim(), plekuitleg: plekUitleg(p), route: bcfg().route || DEF_ROUTE, locatie: bcfg().locatie || DEF_LOC }; }
+function senderVars() {
+  const me = st.user ? myContact() : null, adres = `${STREET} ${st.house || ""}`.trim();
+  return { naam: (me && me.name) || adres, adres, afzender: me && me.name ? `${me.name} (${adres})` : adres, app: APP_URL };
+}
+function fillMsg(tpl, vars) {
+  return String(tpl).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k] ?? "") : m))
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function msgTpl(key) { const m = bcfg().msgs || {}; return m[key] || MSG_DEF[key].text; }
+function msg(key, vars = {}) { const tpl = msgTpl(key), t = fillMsg(tpl, { ...senderVars(), ...vars }); return /[ :]$/.test(tpl) ? t + " " : t; }
+// Voorbeeld zoals WhatsApp het laat zien.
+function waPreview(text) {
+  return esc(text).replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/(^|[\s(>])_([^_\n]+)_/g, "$1<i>$2</i>").replace(/~([^~\n]+)~/g, "<s>$1</s>").replace(/\n/g, "<br>");
+}
+// "App je bezoek": WhatsApp kiest zelf naar wie; de app kent het nummer van je bezoek niet.
+function groupMsg(a, b, note) { return msg("buurtgroep", { tijd: mRange(Math.max(a, floorQ(now())), b), notitie: note ? `_${note}_` : "" }); }
+function bezoekBtn(key, vars, cls = "") { return `<a class="btn wa ${cls}" href="${esc(waShare(msg(key, vars)))}" target="_blank" rel="noopener">${waIcon}App je bezoek</a>`; }
 
 /* ---------- draaischijven ---------- */
 // Drie schijven: dag (met weekdag), uur, minuten per kwartier.
@@ -359,7 +437,7 @@ function reqOfClaim(c) {
   return st.requests.find(r => r.house === c.house && r.offeredSpot === c.spot && r.from < c.until && r.until > c.from) || null;
 }
 // Bericht aan de buur die op je plek staat.
-const claimerMsg = (c) => `Hoi! Over je claim op mijn parkeerplek, ${range(c.from, c.until)}: `;
+const claimerMsg = (c) => msg("claimer", { tijd: mRange(c.from, c.until) });
 function claimerWa(c) {
   const b = waBtns(c.house, claimerMsg(c));
   return b ? `<span class="smallwa">${b}</span>` : `<span class="muted small">geen WhatsApp-nummer</span>`;
@@ -552,7 +630,7 @@ function renderNotices(wins) {
       if (c.earlyReturn && c.earlyReturn > n - 2 * H) {
         const gone = !(c.until > c.from);
         const h = `<div class="notice warn"><strong>Nr ${esc(c.owner)} komt eerder terug</strong><span>${gone ? `Je claim op ${esc(plekVan(c.spot))} vervalt.` : `Zet je auto op ${esc(plekVan(c.spot))} weg voor ${esc(when(c.earlyReturn))}.`}${st.requests.some(r => r.house === st.house && !r.offeredSpot && r.until > n && r.from < c.windowEnd && r.until > c.earlyReturn) ? ` Je verzoek staat weer open voor de buren${gone ? "" : `, vanaf ${esc(when(c.earlyReturn))}`}.` : ""}</span>
-          <div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="ack" data-id="${c.id}" data-spot="${c.spot}">Begrepen</button></div></div>`;
+          <div class="row" style="margin-top:6px">${gone ? bezoekBtn("bezoekVervalt", spotVars(c.spot), "sm") : bezoekBtn("bezoekWeg", { ...spotVars(c.spot), eindtijd: when(c.earlyReturn) }, "sm")}<button class="btn sm ghost" data-action="ack" data-id="${c.id}" data-spot="${c.spot}">Begrepen</button></div></div>`;
         urgent.push(h); forYou.push(h); badge++;
       } else if (c.until > c.from && c.from <= n && c.until > n && c.until - n <= H) {
         const h = `<div class="notice amber"><strong>Je claim op ${esc(plekVan(c.spot))} loopt bijna af</strong><span>Tot ${esc(when(c.until))}.</span>
@@ -563,12 +641,22 @@ function renderNotices(wins) {
     for (const c of liveClaims()) {
       if (c.owner === st.house && c.from <= n && c.until > n) { const wa = waBtns(c.house, claimerMsg(c)); forYou.push(`<div class="notice"><strong>Nr ${esc(c.house)} staat op ${spotsOf(st.house).length > 1 ? `jouw plek ${esc(spotName(c.spot))}` : "jouw plek"}</strong><span>Tot ${esc(when(c.until))}. Eerder terug? Tik bij Van jou op Aanpassen.</span>${wa ? `<div class="row" style="margin-top:6px">${wa}</div>` : ""}</div>`); }
     }
+    // Een buur heeft zijn claim op jouw plek geannuleerd, ingekort of aangepast.
+    for (const e of st.claimLog || []) {
+      if (e.owner !== st.house || e.house === st.house || e.seen || !(e.at > n - D)) continue;
+      const who = `Nr ${esc(e.house)}`, plek = spotsOf(st.house).length > 1 ? ` (plek ${esc(spotName(e.spot))})` : "";
+      const t = e.kind === "cancel" ? [`${who} heeft de claim op je plek geannuleerd${plek}`, `Je plek is ${esc(range(e.was[0], e.was[1]))} weer vrij voor andere buren.`]
+        : e.kind === "stop" ? [`${who} is weg van je plek${plek}`, `Eerder dan gepland: de claim liep tot ${esc(when(e.was[1]))}.`]
+        : [`${who} heeft de claim op je plek aangepast${plek}`, `Nu ${esc(range(e.nu[0], e.nu[1]))}. Was ${esc(range(e.was[0], e.was[1]))}.`];
+      badge++;
+      forYou.unshift(`<div class="notice"><strong>${t[0]}</strong><span>${t[1]}</span><div class="row" style="margin-top:6px"><button class="btn sm ghost" data-action="logok" data-id="${e.id}" data-spot="${e.spot}">Begrepen</button></div></div>`);
+    }
     // Jouw verzoek is door een buur geregeld.
     for (const r of st.requests) {
       if (r.house !== st.house || !r.offeredSpot || r.ackOffered || !(r.until > n)) continue;
       badge++;
       forYou.unshift(`<div class="notice green"><strong>Nr ${esc(r.offeredBy)} heeft je verzoek geregeld</strong><span>Je kunt ${esc(range(Math.max(r.from, n), r.until))} op ${esc(plekVan(r.offeredSpot))} staan.</span>
-        <div class="row" style="margin-top:6px">${contactsOf(r.offeredBy).map(c => waBtn(`https://wa.me/${c.phone}?text=${encodeURIComponent(`Hoi! Dank je wel dat ik ${range(r.from, r.until)} op je parkeerplek mag staan. Groet, ${STREET} ${st.house}`)}`, `Bedank ${c.name || "nr " + r.offeredBy}`)).join("")}<button class="btn sm ghost" data-action="ackoffer" data-id="${r.id}">Begrepen</button></div></div>`);
+        <div class="row" style="margin-top:6px">${waBtns(r.offeredBy, msg("bedank", { tijd: mRange(Math.max(r.from, n), r.until) }))}${bezoekBtn("bezoek", { ...spotVars(r.offeredSpot), tijd: mRange(Math.max(r.from, n), r.until) })}<button class="btn sm ghost" data-action="ackoffer" data-id="${r.id}">Begrepen</button></div></div>`);
     }
   }
   // Je eigen open verzoek: er is nu een passende plek vrij.
@@ -809,7 +897,7 @@ function myRequestsHtml(wins) {
     <div class="when">${esc(range(r.from, r.until))}</div>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}
     ${fit ? `<div class="notice green"><strong>Er is nu een plek vrij voor je verzoek</strong><span>${esc(PlekVan(fit.w.spot))}</span><div class="row" style="margin-top:6px">${fitBtn(fit.w, fit.a, r.until, r.id)}</div></div>` : ""}
     <div class="row"><button class="btn ghost sm" data-action="reqedit" data-id="${r.id}">Aanpassen</button><button class="btn ghost sm" data-action="delreq" data-id="${r.id}">Annuleren</button>
-    <a class="btn wa sm" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(r.from, r.until)} een parkeerplek vrij? ${r.note ? "(" + r.note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a></div></div>`; }).join("");
+    <a class="btn wa sm" href="${esc(waShare(groupMsg(r.from, r.until, r.note)))}" target="_blank" rel="noopener">${waIcon}App de buurtgroep</a></div></div>`; }).join("");
 }
 // Aanbieden kan als de plek in die periode niet door een ander geclaimd is.
 function canOffer(p, r) {
@@ -874,7 +962,7 @@ function renderMine(wins) {
   }
   if (myClaims.length) html += `<div class="dayhead">${myClaims.length > 1 ? "Jouw claims" : "Jouw claim"}</div>` + myClaims.map(c => { const r = reqOfClaim(c); return `<div class="card is-claimed"><div class="big">Plek van ${esc(spotNr(c.spot))}</div>
     <div class="when">${esc(range(c.from, c.until))}</div>${r && r.note ? `<div class="note">Voor je verzoek: ${esc(r.note)}</div>` : ""}
-    <div class="row">${c.from <= n ? `<button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">Ik ben weg</button>` : ""}<button class="btn ghost sm" data-action="claimedit" data-id="${c.id}" data-spot="${c.spot}">Aanpassen</button>${c.from > n ? `<button class="btn ghost sm" data-action="claimcancel" data-id="${c.id}" data-spot="${c.spot}">Annuleren</button>` : ""}${calBtn(calForClaim(c))}${waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) sta ${range(c.from, c.until)} op jouw parkeerplek. Groet!`)}</div></div>`; }).join("");
+    <div class="row">${c.from <= n ? `<button class="btn ghost sm" data-action="unclaim" data-id="${c.id}" data-spot="${c.spot}">Ik ben weg</button>` : ""}<button class="btn ghost sm" data-action="claimedit" data-id="${c.id}" data-spot="${c.spot}">Aanpassen</button>${calBtn(calForClaim(c))}${waBtns(c.owner, msg("eigenaarStaat", { tijd: mRange(c.from, c.until) }))}${bezoekBtn("bezoek", { ...spotVars(c.spot), tijd: mRange(c.from, c.until) })}</div></div>`; }).join("");
   if (myReqs.length) html += `<div class="dayhead">${myReqs.length > 1 ? "Jouw verzoeken" : "Jouw verzoek"}</div>` + myRequestsHtml(wins);
   $("#mine").innerHTML = html;
 }
@@ -883,7 +971,7 @@ function render() {
   if (!st.member) return;
   const wins = windows();
   for (const f of [renderBanner, () => renderNotices(wins), renderMoment, () => renderMap(wins), () => renderOptions(wins), () => renderMine(wins), renderBuurt, renderBeheerder]) {
-    try { f(); } catch (e) { console.error(e); }
+    try { f(); } catch (e) { console.error(e); logError("scherm", e); }
   }
   $("#accountId").textContent = st.user ? st.user.uid : "";
   if (st.ob && ["spot", "housemate"].includes(st.ob.steps[st.ob.i])) renderOnboard(); else maybeOnboard();
@@ -1165,6 +1253,7 @@ async function guard(fn) {
   try { await fn(); return true; }
   catch (e) {
     console.warn(e);
+    if (!(e instanceof UserError) && !(e && e.code === "unavailable")) logError(st.lastAction || "actie", e);
     if (e instanceof UserError) toast(e.message);
     else if (e && e.code === "permission-denied") toast("Geen toegang. Log opnieuw in.");
     else if (e && e.code === "unavailable") toast("Geen verbinding. Probeer het zo nog eens.");
@@ -1177,9 +1266,12 @@ async function mutateClaims(spot, fn) {
   const ref = doc(fs, "claims", spot);
   return runTransaction(fs, async (tx) => {
     const snap = await tx.get(ref);
-    const items = ((snap.exists() && snap.data().items) || []).filter(c => (c.until || 0) > now() - 2 * D || (c.earlyReturn && c.earlyReturn > now() - 2 * D));
-    const res = fn(items);
-    tx.set(ref, { items, updatedAt: now() });
+    const data = snap.exists() ? snap.data() : {};
+    const items = (data.items || []).filter(c => (c.until || 0) > now() - 2 * D || (c.earlyReturn && c.earlyReturn > now() - 2 * D));
+    // Logboek voor de eigenaar: claims die geannuleerd, ingekort of aangepast zijn. Na twee dagen weg.
+    const log = (data.log || []).filter(e => e.at > now() - 2 * D);
+    const res = fn(items, log);
+    tx.set(ref, { items, log, updatedAt: now() });
     return res;
   });
 }
@@ -1296,12 +1388,12 @@ async function doClaim(w, f, u, req = null) {
   bumpStats({ c: 1, min: (u - f) / MIN });
 }
 function claimDoneHtml(w, f, u, reqId) {
-  const msg = `Hoi! Ik (${STREET} ${st.house}) heb jouw parkeerplek geclaimd, ${range(f, u)}. Dank je wel!`;
-  const btns = waBtns(w.house, msg);
+  const btns = waBtns(w.house, msg("eigenaarClaim", { tijd: mRange(f, u) }));
   return `<div class="notice green"><strong>De plek van nr ${esc(spotName(w.spot) || w.house)} is voor jou</strong><span>${esc(range(f, u))}.</span></div>
     ${reqQuestionHtml(f, u, reqId)}
     ${calBtn(calForClaim({ spot: w.spot, until: u }), "btn ghost block")}
     ${btns ? `<p class="muted" style="margin:0">Laat nr ${esc(w.house)} het weten:</p>${btns}` : `<p class="muted" style="margin:0">Nr ${esc(w.house)} heeft geen WhatsApp-nummer ingevuld, maar ziet je claim in de app.</p>`}
+    <p class="muted" style="margin:0">Komt er bezoek? Stuur de tijd en de route:</p>${bezoekBtn("bezoek", { ...spotVars(w.spot), tijd: mRange(f, u) })}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`;
 }
 // "Claim voor deze periode": in één keer precies de gevraagde tijd claimen.
@@ -1363,10 +1455,11 @@ async function saveClaimEdit(id, spot) {
   if (f === c.from && u === c.until) { closeSheet(); return; }
   const r = reqOfClaim(c);
   try {
-    await mutateClaims(spot, (items) => {
+    await mutateClaims(spot, (items, log) => {
       const it = items.find(x => x.id === id); if (!it) throw new UserError("Je claim bestaat niet meer.");
       const clash = items.find(x => x.id !== id && x.house && x.until > x.from && x.from < u && x.until > f);
       if (clash) throw new UserError(`Nr ${clash.house} heeft de plek ${range(clash.from, clash.until)} al geclaimd.`);
+      log.push(logItem(it, "change", [f, u]));
       it.from = f; it.until = u;
       if (b.w) { it.windowStart = b.w.start; it.windowEnd = b.w.end; }
     });
@@ -1374,17 +1467,18 @@ async function saveClaimEdit(id, spot) {
   bumpStats({ min: ((u - f) - (c.until - c.from)) / MIN, house: c.house, at: c.createdAt });
   // Je hebt zelf gekozen hoe lang je de plek nodig hebt; het verzoek erachter schuift mee.
   if (r) await guard(() => updateDoc(doc(fs, "requests", r.id), { from: f, until: u }));
-  const wa = waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) heb mijn claim op je parkeerplek aangepast: ${range(f, u)}. Groet!`);
+  const wa = waBtns(c.owner, msg("eigenaarAangepast", { tijd: mRange(f, u) }));
   sheetBody(`<div class="notice green"><span>Aangepast. Je claim op ${esc(plekVan(spot))}: ${esc(range(f, u))}.</span></div>
     ${calBtn(calForClaim({ spot, until: u }), "btn ghost block")}
     ${wa ? `<p class="muted" style="margin:0">Laat nr ${esc(c.owner)} het weten:</p>${wa}` : ""}
+    <p class="muted" style="margin:0">Komt er bezoek? Stuur de nieuwe tijd:</p>${bezoekBtn("bezoekNieuw", { ...spotVars(spot), tijd: mRange(f, u) })}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function cancelClaim(id, spot) {
   const c = liveClaims().find(x => x.id === id && x.spot === spot); if (!c) return;
   const running = c.from <= now();
   if (!(await unclaim(id, spot, true))) return;
-  const wa = waBtns(c.owner, `Hoi! Ik (${STREET} ${st.house}) ${running ? "ben weg van je parkeerplek" : `heb mijn claim op je parkeerplek (${range(c.from, c.until)}) geannuleerd`}. Dank je wel!`);
+  const wa = waBtns(c.owner, running ? msg("eigenaarWeg") : msg("eigenaarGeannuleerd", { tijd: mRange(c.from, c.until) }));
   const body = `<div class="notice green"><span>${running ? "Je claim is gestopt." : "Je claim is geannuleerd."} ${esc(PlekVan(spot))} is weer vrij voor andere buren.</span></div>
     ${wa ? `<p class="muted" style="margin:0">Laat nr ${esc(c.owner)} het weten:</p>${wa}` : ""}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`;
@@ -1394,14 +1488,18 @@ async function cancelClaim(id, spot) {
 async function unclaim(id, spot, quiet) {
   let adj = null;
   const cur = st.claims.find(x => x.id === id && x.spot === spot), r = cur && cur.house === st.house && !cur.earlyReturn ? reqOfClaim(cur) : null;
-  if (await guard(() => mutateClaims(spot, (items) => {
+  if (await guard(() => mutateClaims(spot, (items, log) => {
     const i = items.findIndex(c => c.id === id); if (i < 0) return;
     const c = items[i];
     if (c.earlyReturn) { items.splice(i, 1); return; }
-    if (c.from > now()) { items.splice(i, 1); adj = { c: -1, min: -(c.until - c.from) / MIN, house: c.house, at: c.createdAt }; }
-    else { const u = Math.max(c.from, now()); adj = { min: -(c.until - u) / MIN, house: c.house, at: c.createdAt }; c.until = u; }
+    if (c.from > now()) { items.splice(i, 1); adj = { c: -1, min: -(c.until - c.from) / MIN, house: c.house, at: c.createdAt }; log.push(logItem(c, "cancel", null)); }
+    else { const u = Math.max(c.from, now()); adj = { min: -(c.until - u) / MIN, house: c.house, at: c.createdAt }; if (c.until - u >= Q) log.push(logItem(c, "stop", [c.from, u])); c.until = u; }
   }))) { if (adj) bumpStats(adj); if (r) await guard(() => deleteDoc(doc(fs, "requests", r.id))); if (!quiet) toast("De plek is weer vrij."); render(); return true; }
   return false;
+}
+function logItem(c, kind, nu) { return { id: rid(), claim: c.id, owner: c.owner, house: c.house, kind, was: [c.from, c.until], nu, at: now(), seen: false }; }
+async function logOk(id, spot) {
+  await guard(() => mutateClaims(spot, (items, log) => { const e = log.find(x => x.id === id); if (e) e.seen = true; }));
 }
 async function ack(id, spot) {
   await guard(() => mutateClaims(spot, (items) => { const c = items.find(c => c.id === id); if (c) c.earlyReturn = null; }));
@@ -1444,7 +1542,7 @@ async function changeEnd(key, t) {
   }
   // Eén waarschuwing per buur, ook als die meerdere claims had.
   const byHouse = [...new Set(hit.map(c => c.house))].map(h => hit.filter(c => c.house === h).sort((a, b) => a.from - b.from)[0]);
-  const msgFor = (c) => `Hoi, ik (${STREET} ${st.house}) kom eerder terug. Wil je mijn parkeerplek ${end <= c.from ? "toch niet gebruiken" : `vrijmaken voor ${when(end)}`}? Sorry en dank je!`;
+  const msgFor = (c) => end <= c.from ? msg("eerderVervalt", { tijd: mRange(c.from, c.until) }) : msg("eerderTerug", { eindtijd: when(end) });
   sheetBody(`<div class="notice green"><span>${end <= w.start ? `${esc(yourLabel(w.spot))} wordt niet vrijgegeven.` : `${esc(yourLabel(w.spot))} is weer van jou vanaf ${esc(when(end))}.`}</span></div>
     ${byHouse.length ? `<p class="muted" style="margin:0">${byHouse.length > 1 ? "Deze buren zien" : `Nr ${esc(byHouse[0].house)} ziet`} dit bovenaan in de app.</p>` : ""}
     ${byHouse.map(c => { const b = waBtns(c.house, msgFor(c)); return b ? `<div class="row"><span class="muted small">Waarschuw nr ${esc(c.house)}:</span>${b}</div>` : ""; }).join("")}
@@ -1502,7 +1600,7 @@ async function submitRequest(ev, rr) {
 async function postRequest(from, until, note) {
   if (await guard(() => addDoc(collection(fs, "requests"), { house: st.house, from, until, note, offeredBy: null, offeredSpot: null, createdAt: now() }))) {
     openSheet("Verzoek geplaatst", `<p style="margin:0">Buren zien je verzoek in de app. Deel het ook in de buurtgroep, dan ziet iedereen het sneller.</p>
-      <a class="btn wa block" href="${esc(waShare(`Hoi buren! Heeft iemand ${range(from, until)} een parkeerplek vrij? ${note ? "(" + note + ") " : ""}Aanbieden kan in ${APP}: ${APP_URL}`))}" target="_blank" rel="noopener">${waIcon}Deel in buurtgroep</a>
+      <a class="btn wa block" href="${esc(waShare(groupMsg(from, until, note)))}" target="_blank" rel="noopener">${waIcon}App de buurtgroep</a>
       <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
   }
 }
@@ -1524,11 +1622,117 @@ async function offer(id, p) {
   });
   if (ok) bumpStats({ c: 1, min: (until - from) / MIN, house: r.house });
   if (ok) openSheet("Aangeboden", `<div class="notice green"><span>Je plek staat klaar voor nr ${esc(r.house)}, ${esc(range(from, until))}.</span></div>
-    ${waBtns(r.house, `Hoi! Je kunt ${range(from, until)} op mijn parkeerplek staan. Groet, ${STREET} ${st.house}`)}
+    ${waBtns(r.house, msg("aangeboden", { tijd: mRange(from, until) }))}
     <button class="btn ghost block" data-action="closesheet">Klaar</button>`);
 }
 async function ackOffer(id) { await guard(() => updateDoc(doc(fs, "requests", id), { ackOffered: true })); }
 async function delReq(id) { if (await guard(() => deleteDoc(doc(fs, "requests", id)))) toast("Verzoek geannuleerd."); }
+
+/* ---------- problemen ---------- */
+// Fouten stil opslaan, zodat de beheerder ze ziet voordat buren afhaken. Hooguit 10 per keer openen, geen dubbele.
+const errSeen = new Set();
+function logError(where, e) {
+  try {
+    if (!st.member || !st.user || errSeen.size >= 10) return;
+    const m = String((e && (e.message || e.code)) || e || "onbekend").slice(0, 300), key = where + "|" + m;
+    if (errSeen.has(key)) return; errSeen.add(key);
+    addDoc(collection(fs, "errors"), { at: now(), v: APP_VERSION, uid: st.user.uid, house: st.house || null, where: String(where).slice(0, 60), msg: m, code: (e && e.code) || null, ua: (navigator.userAgent || "").slice(0, 160) }).catch(() => {});
+  } catch {}
+}
+window.addEventListener("error", (ev) => logError("pagina", ev.error || ev.message));
+window.addEventListener("unhandledrejection", (ev) => logError("achtergrond", ev.reason));
+document.getElementById("setMsgs")?.addEventListener("toggle", (e) => { if (e.target.open) mountMsgs(); });
+document.getElementById("setErrs")?.addEventListener("toggle", (e) => { if (e.target.open) loadErrors(); });
+async function loadErrors() {
+  const box = $("#adminErrs"); if (!box || !st.isAdmin) return;
+  box.innerHTML = `<div class="muted small">Laden…</div>`;
+  try {
+    const snap = await getDocs(collection(fs, "errors"));
+    let list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Ouder dan 30 dagen: weg.
+    for (const x of list.filter(x => !(x.at > now() - 30 * D))) deleteDoc(doc(fs, "errors", x.id)).catch(() => {});
+    list = list.filter(x => x.at > now() - 30 * D).sort((a, b) => b.at - a.at);
+    $("#valErrs").textContent = list.length ? String(list.length) : "geen";
+    box.innerHTML = list.length
+      ? list.slice(0, 40).map(x => `<div class="errrow"><div><strong>${esc(when(x.at))}</strong> · nr ${esc(x.house || "?")} · versie ${esc(x.v || "?")} · ${esc(x.where || "")}</div><div class="muted small">${esc(x.msg || "")}</div></div>`).join("")
+        + `<div class="row"><button class="btn ghost sm" data-action="errclear">Alles wissen</button></div>`
+      : `<div class="empty">Geen problemen in de afgelopen 30 dagen.</div>`;
+  } catch (e) { box.innerHTML = `<div class="err">Problemen ophalen lukte niet. Staan de nieuwe regels in Firebase?</div>`; }
+}
+async function clearErrors(el) {
+  if (!confirmTap("errclear", el, "Zeker weten? Tik nog een keer")) return;
+  const snap = await getDocs(collection(fs, "errors"));
+  if (await guard(async () => { for (const d of snap.docs) await deleteDoc(doc(fs, "errors", d.id)); })) { toast("Problemen gewist."); loadErrors(); }
+}
+
+/* ---------- berichten instellen (beheer) ---------- */
+function mountMsgs() {
+  const box = $("#adminMsgs"); if (!box || !st.isAdmin) return;
+  const c = bcfg(), linked = SPOTS.filter(p => ownerOf(p)).sort((a, b) => spotName(a).localeCompare(spotName(b), "nl", { numeric: true }));
+  box.innerHTML = `<p class="muted small" style="margin:0">Deze teksten gebruikt de app bij de WhatsApp-knoppen. Een wijziging geldt meteen voor alle buren.</p>
+    <div class="lbl">Voor bezoek</div>
+    <div class="field"><label for="mRoute">Route</label><textarea id="mRoute" rows="4">${esc(c.route || DEF_ROUTE)}</textarea></div>
+    <div class="field"><label for="mLoc">Locatie (Google Maps-link)</label><input type="text" id="mLoc" value="${esc(c.locatie || DEF_LOC)}" inputmode="url"></div>
+    <div class="field"><label for="mAlg">Na het adres van een plek</label><input type="text" id="mAlg" value="${esc(c.plekAlgemeen ?? DEF_PLEK_ALG)}"><span class="muted small">Zo wordt het bijvoorbeeld: ${esc(STREET)} 34, ${esc(c.plekAlgemeen ?? DEF_PLEK_ALG)}.</span></div>
+    <details class="sub"><summary>Eigen uitleg per plek</summary><div class="flat" style="margin-top:8px">
+      <p class="muted small" style="margin:0">Voor plekken die je op het bordje niet uit elkaar houdt. Leeg laten: dan gebruikt de app de tekst hierboven.</p>
+      ${linked.map(p => `<div class="field"><label for="mp_${p}">${esc(STREET)} ${esc(spotName(p))} <span class="muted">(${p})</span></label><input type="text" id="mp_${p}" data-plek="${p}" value="${esc(plekText(p))}"></div>`).join("")}
+    </div></details>
+    <div class="err" id="mBaseErr" hidden></div>
+    <div class="row"><button class="btn sm" data-action="msgbase">Opslaan</button></div>
+    <div class="lbl" style="margin-top:8px">Berichten</div>
+    <div class="field"><label for="mKey">Kies een bericht</label><select id="mKey">${Object.entries(MSG_DEF).map(([k, d]) => `<option value="${k}">${esc(d.label)}${(c.msgs || {})[k] ? " (aangepast)" : ""}</option>`).join("")}</select></div>
+    <div id="mEdit" class="flat"></div>`;
+  $("#mKey").addEventListener("change", paintMsgEdit);
+  paintMsgEdit();
+}
+function msgSample(key) {
+  const p = SPOTS.find(p => ownerOf(p)) || SPOTS[0], f = sod(now() + D) + 18.75 * H;
+  return { ...senderVars(), ...(ownerOf(p) ? spotVars(p) : { plek: `${STREET} 34`, plekuitleg: `${STREET} 34, ${bcfg().plekAlgemeen ?? DEF_PLEK_ALG}`, route: bcfg().route || DEF_ROUTE, locatie: bcfg().locatie || DEF_LOC }),
+    tijd: mRange(f, f + 3.25 * H), eindtijd: when(f + 2.25 * H), notitie: "_Ouders komen eten_", beheerder: (beheerder() || {}).name || "Jasper", app: APP_URL };
+}
+function paintMsgEdit() {
+  const key = $("#mKey").value, d = MSG_DEF[key], cur = (bcfg().msgs || {})[key];
+  $("#mEdit").innerHTML = `<p class="muted small" style="margin:0">${esc(d.when)}</p>
+    <div class="row"><button type="button" class="btn ghost sm" data-fmt="*"><b>Vet</b></button><button type="button" class="btn ghost sm" data-fmt="_"><i>Schuin</i></button></div>
+    <textarea id="mText" rows="10" aria-label="Tekst van het bericht">${esc(cur || d.text)}</textarea>
+    <div class="chips">${[...d.vars, ...MSG_COMMON].map(v => `<button type="button" class="chip" data-var="${v}">{${v}}</button>`).join("")}</div>
+    <p class="muted small" style="margin:0">Tik op een woord tussen {} om het in te voegen. De app vult het zelf in.</p>
+    <div class="lbl">Voorbeeld</div><div class="wabubble" id="mPrev"></div>
+    <div class="row"><button class="btn sm" data-action="msgsave" data-key="${key}">Opslaan</button><button class="btn ghost sm" data-action="msgreset" data-key="${key}">Standaardtekst terug</button></div>
+    <p class="muted small" style="margin:0" id="mState">${cur ? "Aangepaste tekst." : "Dit is de standaardtekst."}</p>`;
+  const ta = $("#mText"), prev = () => { $("#mPrev").innerHTML = waPreview(fillMsg(ta.value, msgSample(key))); };
+  ta.addEventListener("input", prev);
+  $("#mEdit").addEventListener("click", (e) => {
+    const f = e.target.closest("[data-fmt]"), v = e.target.closest("[data-var]");
+    if (!f && !v) return;
+    const a = ta.selectionStart, b = ta.selectionEnd, sel = ta.value.slice(a, b);
+    const ins = f ? `${f.dataset.fmt}${sel || "tekst"}${f.dataset.fmt}` : `{${v.dataset.var}}`;
+    ta.setRangeText(ins, a, b, "end"); ta.focus(); prev();
+  });
+  prev();
+}
+async function msgSave(key) {
+  const t = $("#mText").value.replace(/\r/g, "");
+  if (!t.trim()) return toast("Leeg kan niet. Kies Standaardtekst terug als je de oude tekst wilt.");
+  const same = t.trim() === MSG_DEF[key].text.trim();
+  if (await guard(() => setDoc(doc(fs, "config", "berichten"), { msgs: { [key]: same ? deleteField() : t }, updatedAt: now() }, { merge: true }))) {
+    toast("Bericht opgeslagen."); $("#mState").textContent = same ? "Dit is de standaardtekst." : "Aangepaste tekst.";
+  }
+}
+async function msgReset(key) {
+  if (await guard(() => setDoc(doc(fs, "config", "berichten"), { msgs: { [key]: deleteField() }, updatedAt: now() }, { merge: true }))) {
+    $("#mText").value = MSG_DEF[key].text; $("#mText").dispatchEvent(new Event("input")); $("#mState").textContent = "Dit is de standaardtekst."; toast("Standaardtekst teruggezet.");
+  }
+}
+async function msgBase() {
+  const route = $("#mRoute").value.trim(), loc = $("#mLoc").value.trim(), alg = $("#mAlg").value.trim();
+  if (!/^https:\/\//.test(loc)) return showErr($("#mBaseErr"), "De locatie moet een link zijn die begint met https://");
+  showErr($("#mBaseErr"), "");
+  const plekken = {};
+  document.querySelectorAll("#adminMsgs [data-plek]").forEach(i => { plekken[i.dataset.plek] = i.value.trim(); });
+  if (await guard(() => setDoc(doc(fs, "config", "berichten"), { route: route || DEF_ROUTE, locatie: loc, plekAlgemeen: alg, plekken, updatedAt: now() }, { merge: true }))) toast("Opgeslagen.");
+}
 
 /* ---------- beheerder ---------- */
 function beheerder() { const b = st.config.beheer; return b && b.phone ? b : null; }
@@ -1539,12 +1743,12 @@ function beheerderBtn(text) {
 function renderBeheerder() {
   const b = beheerder();
   $("#adresNote").innerHTML = b
-    ? `<span>Verhuisd of verkeerd adres? ${esc(b.name || "De beheerder")} (nr ${esc(b.house)}) is de beheerder en past het voor je aan.</span>${beheerderBtn(`Hoi ${b.name || ""}, mijn adres in ${APP} klopt niet. Ik woon op ${STREET} `)}`
+    ? `<span>Verhuisd of verkeerd adres? ${esc(b.name || "De beheerder")} (nr ${esc(b.house)}) is de beheerder en past het voor je aan.</span>${beheerderBtn(msg("beheerAdres", { beheerder: b.name || "" }))}`
     : `Verhuisd of verkeerd adres? Vraag de beheerder het aan te passen.`;
   $("#beheerRow").hidden = !b;
   if (b) {
     $("#beheerName").textContent = `${b.name || "Beheerder"} · nr ${b.house}`;
-    $("#beheerBtn").innerHTML = beheerderBtn(`Hoi ${b.name || ""}, ik heb een vraag over ${APP}: `);
+    $("#beheerBtn").innerHTML = beheerderBtn(msg("beheerVraag", { beheerder: b.name || "" }));
   }
   if (st.isAdmin) {
     const me = myContact(), shown = b && b.uid === st.user.uid;
@@ -1710,7 +1914,7 @@ function subscribe() {
     onSnapshot(collection(fs, "houses"), (s) => { st.phonesLoaded = true; map("phones")(s); }, err),
     onSnapshot(query(collection(fs, "releases"), where("until", ">", cut)), arr("releases"), err),
     onSnapshot(collection(fs, "recurring"), arr("recurring"), err),
-    onSnapshot(collection(fs, "claims"), (s) => { st.claims = s.docs.flatMap(d => (d.data().items || []).map(c => ({ ...c, spot: d.id }))); render(); }, err),
+    onSnapshot(collection(fs, "claims"), (s) => { st.claims = s.docs.flatMap(d => (d.data().items || []).map(c => ({ ...c, spot: d.id }))); st.claimLog = s.docs.flatMap(d => (d.data().log || []).map(e => ({ ...e, spot: d.id }))); render(); }, err),
     onSnapshot(query(collection(fs, "requests"), where("until", ">", cut)), arr("requests"), err),
     onSnapshot(collection(fs, "stats"), map("stats"), err),
     onSnapshot(collection(fs, "config"), map("config"), err),
@@ -1752,6 +1956,7 @@ function hideNotice(el) {
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]"); if (!el) return;
   const a = el.dataset.action, d = el.dataset;
+  st.lastAction = a;
   if (el.tagName === "A") e.preventDefault();
   switch (a) {
     case "goto": closeSheet(); setTab(d.tab); break;
@@ -1764,6 +1969,11 @@ document.addEventListener("click", (e) => {
     case "cancelwin": { const w = windows().find(x => x.key === d.key); if (w) changeEnd(w.key, w.start > now() ? w.start : floorQ(now())); break; }
     case "unclaim": unclaim(d.id, d.spot); break;
     case "ack": hideNotice(el); ack(d.id, d.spot); break;
+    case "logok": hideNotice(el); logOk(d.id, d.spot); break;
+    case "msgsave": msgSave(d.key); break;
+    case "msgreset": msgReset(d.key); break;
+    case "msgbase": msgBase(); break;
+    case "errclear": clearErrors(el); break;
     case "stoprec": if (st.sheet) closeSheet(); stopRec(d.ref); break;
     case "closesheet": closeSheet(); break;
     case "releasesheet": releaseSheet(d.spot); break;

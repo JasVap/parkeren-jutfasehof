@@ -37,6 +37,8 @@
   --warn: #b3261e;
   --warn-soft: #fbe3e1;
   --wa: #128c4a;
+  --wa-bubble: #d9fdd3;
+  --wa-ink: #111b21;
   --scrim: rgba(12, 18, 28, .45);
   --display: "Overpass", "Arial Narrow", Arial, sans-serif;
   --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
@@ -47,13 +49,13 @@
   :root:not([data-theme="light"]) {
     --bg: #0f141b; --surface: #18202b; --surface-2: #1e2734; --ink: #e7ecf3; --muted: #9ba7b7; --line: #2c3646;
     --sign: #4f86d8; --sign-ink: #0b1220; --free: #52c487; --free-soft: #173426; --claimed: #e8a646; --claimed-soft: #3a2b12;
-    --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --scrim: rgba(0,0,0,.6); color-scheme: dark;
+    --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --wa-bubble: #005c4b; --wa-ink: #e9edef; --scrim: rgba(0,0,0,.6); color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0f141b; --surface: #18202b; --surface-2: #1e2734; --ink: #e7ecf3; --muted: #9ba7b7; --line: #2c3646;
   --sign: #4f86d8; --sign-ink: #0b1220; --free: #52c487; --free-soft: #173426; --claimed: #e8a646; --claimed-soft: #3a2b12;
-  --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --scrim: rgba(0,0,0,.6); color-scheme: dark;
+  --own: #3a4452; --paving: #2d2924; --verge: #1e2e23; --warn: #ff8a80; --warn-soft: #3d1b19; --wa: #3ccf7d; --wa-bubble: #005c4b; --wa-ink: #e9edef; --scrim: rgba(0,0,0,.6); color-scheme: dark;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -192,6 +194,10 @@ input[type="datetime-local"], input[type="time"], input[type="text"], input[type
 .notice.reqcard > div { flex: 1; min-width: 0; }
 .adresnote { display: grid; gap: 8px; justify-items: start; }
 .adresnote .btn, .smallwa .btn { min-height: 40px; font-size: 14px; padding: 0 12px; }
+textarea { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; min-width: 0; font-size: 16px; line-height: 1.45; resize: vertical; color: var(--ink); }
+.wabubble { background: var(--wa-bubble); color: var(--wa-ink); border-radius: 10px 10px 10px 2px; padding: 10px 12px; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; box-shadow: 0 1px 1px rgba(0,0,0,.12); }
+.errrow { display: grid; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+details.sub > summary { cursor: pointer; font-weight: 600; font-size: 15px; }
 .smallwa { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-left: auto; }
 .card .segrow + .segrow, .card .row + .segrow { margin-top: 2px; }
 .segrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
@@ -479,6 +485,10 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
             </div></details>
           <details class="set"><summary><span class="lab">Beheerder tonen aan buren</span></summary>
             <div class="setbody" id="adminShow"></div></details>
+          <details class="set" id="setMsgs"><summary><span class="lab">Berichten</span></summary>
+            <div class="setbody" id="adminMsgs"></div></details>
+          <details class="set" id="setErrs"><summary><span class="lab">Problemen</span><span class="val" id="valErrs"></span></summary>
+            <div class="setbody" id="adminErrs"></div></details>
           <details class="set"><summary><span class="lab">Plekken loskoppelen</span></summary>
             <div class="setbody" id="adminSpots"></div></details>
           <details class="set"><summary><span class="lab">Back-up en opruimen</span></summary>
@@ -526,6 +536,6 @@ input[type="email"], input[type="password"] { background: var(--surface-2); bord
 <div class="toast" id="toast" hidden role="status"></div>
 
 <div id="updateBar" class="updatebar" hidden role="status"><span>Er is een nieuwe versie van de app.</span><button class="btn sm" data-action="reload">Vernieuwen</button></div>
-<script type="module" src="app.js?v=7.3"></script>
+<script type="module" src="app.js?v=7.4"></script>
 </body>
 </html>
